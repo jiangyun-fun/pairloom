@@ -176,6 +176,55 @@ class TestPublishIntegrity:
         assert "could not remove backup file(s)" in captured.err
         assert "d.parquet.pairloom-bak" in captured.err
 
+    def test_post_commit_failure_keeps_published_outputs(
+        self, fx, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """A failure after the last publication must not roll back.
+
+        The batch-3 commit point was comment-only: a TemporaryDirectory
+        cleanup failure after publication still deleted every published
+        output via the rollback handlers.
+        """
+        import tempfile
+
+        from pairloom.cli import main
+
+        fx.write_bam_and_set(fx.pair("pc", UNIQUE, UNIQUE + 5, read_len=20))
+        out = tmp_path / "postcommit"
+        out.mkdir()
+        argv = [
+            "--input",
+            str(fx.last_bam),
+            "--reference",
+            str(fx.ref_path),
+            "--mode",
+            "adjust",
+            "--adjusted-bam",
+            str(out / "a.bam"),
+            "--disagreement-parquet",
+            str(out / "d.parquet"),
+            "--read-stats-parquet",
+            str(out / "s.parquet"),
+        ]
+        orig_cleanup = tempfile.TemporaryDirectory.cleanup
+        fired = {"done": False}
+
+        def boom(self, *args, **kwargs):
+            if not fired["done"]:
+                fired["done"] = True
+                raise OSError(5, "injected tempdir cleanup failure")
+            return orig_cleanup(self, *args, **kwargs)
+
+        monkeypatch.setattr(tempfile.TemporaryDirectory, "cleanup", boom)
+        code = main(argv)
+        assert code == 1  # the failure is loud
+        # ... but every published output stays.
+        for name in ("a.bam", "d.parquet", "s.parquet"):
+            assert (out / name).exists(), name
+        captured = capsys.readouterr()
+        assert "post-commit" in captured.err
+        assert "published outputs were kept" in captured.err
+
 
 class TestInjectedFailures:
     def test_failed_parquet_write(self, pair_bam, fx, monkeypatch) -> None:

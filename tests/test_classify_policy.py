@@ -306,6 +306,34 @@ class TestRecordPolicy:
         assert "MQ" not in dict(recs[0x40].get_tags())  # mate is unmapped
         assert dict(recs[0x80].get_tags())["MQ"] == 60  # mapped mate's MAPQ
 
+    def test_mixed_paired_unpaired_rejected_in_any_order(self, fx) -> None:
+        """Record order must not decide whether the template is rejected."""
+        ref = fx.ref_seqs["chr1"]
+        unpaired = fx.make_record("mix", 0, UNIQUE, "20M", ref[UNIQUE : UNIQUE + 20])
+        paired_r1 = fx.make_record(
+            "mix",
+            0x1 | 0x40,
+            UNIQUE + 100,
+            "20M",
+            ref[UNIQUE + 100 : UNIQUE + 120],
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        for order in ([unpaired, paired_r1], [paired_r1, unpaired]):
+            fx.write_bam_and_set(list(order))
+            code, out = fx.run(mode="adjust")
+            assert code == 1, order
+            assert not out["adjusted_bam"].exists()
+
+    def test_two_unpaired_primaries_rejected(self, fx) -> None:
+        ref = fx.ref_seqs["chr1"]
+        a = fx.make_record("two", 0, UNIQUE, "20M", ref[UNIQUE : UNIQUE + 20])
+        b = fx.make_record("two", 0, UNIQUE + 100, "20M", ref[UNIQUE + 100 : UNIQUE + 120])
+        fx.write_bam_and_set([a, b])
+        code, out = fx.run(mode="adjust")
+        assert code == 1
+        assert not out["adjusted_bam"].exists()
+
     def test_duplicate_primary_read_numbers_fail_loudly(self, fx) -> None:
         """Two primary R1 records must not silently overwrite each other."""
         ref = fx.ref_seqs["chr1"]

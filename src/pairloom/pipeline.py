@@ -150,6 +150,17 @@ def process_template(records: list[Any], state: _WorkerState) -> TemplateResult:
     name = records[0].query_name
     primaries, others = split_primaries(records)
     check_pair_flags(primaries, name)
+    # Validate the primary group as a whole BEFORE assigning slots: record
+    # order must not decide whether a malformed template is rejected.
+    paired_primaries = [r for r in primaries if r.flag & FLAG_PAIRED]
+    unpaired_primaries = [r for r in primaries if not (r.flag & FLAG_PAIRED)]
+    if paired_primaries and unpaired_primaries:
+        raise DataInvariantError(f"template {name!r} mixes paired and unpaired primary records")
+    if len(unpaired_primaries) > 1:
+        raise DataInvariantError(
+            f"template {name!r} has {len(unpaired_primaries)} unpaired primary "
+            "records; at most one is allowed"
+        )
     r1 = r2 = None
     for record in primaries:
         if record.flag & FLAG_PAIRED:
@@ -158,12 +169,7 @@ def process_template(records: list[Any], state: _WorkerState) -> TemplateResult:
             else:
                 r2 = record
         else:
-            if r1 is None and r2 is None:
-                r1 = record  # non-paired primary: treated as R1-like orphan
-            else:
-                raise DataInvariantError(
-                    f"template {name!r} mixes paired and unpaired primary records"
-                )
+            r1 = record  # single non-paired primary: treated as R1-like orphan
 
     classification: str
     merge_reason: str | None = None
@@ -409,7 +415,9 @@ def _sync_mate_fields(r1: Any, r2: Any) -> None:
         elif r1.reference_start > r2.reference_start:
             r1.template_length, r2.template_length = -tlen, tlen
         else:
-            r1.template_length, r2.template_length = tlen, tlen
+            # SAM TLEN: signs must be opposite within a template; with
+            # identical coordinates the first segment (read1) is positive.
+            r1.template_length, r2.template_length = tlen, -tlen
     else:
         r1.template_length = 0
         r2.template_length = 0
@@ -513,6 +521,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
     backups: list[tuple[Path, Path]] = []
     writers: dict[str, _BamWriter] = {}
     tmp_files: list[Path] = []
+    committed = False
 
     try:
         with tempfile.TemporaryDirectory(prefix="pairloom-") as tmpdir:
@@ -635,10 +644,13 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                         backups.append((backup, final))
                     os.replace(tmp, final)
                     published.append(final)
-                # Commit point: every requested output is now published and
-                # complete. Backup removal is post-commit housekeeping: a
-                # failure here must never roll back (and destroy) committed
-                # outputs, so leftovers are reported loudly instead.
+                # Commit point: every requested output is published and
+                # complete. From here rollback is FORBIDDEN — destroying
+                # committed outputs (or their backups) would lose data
+                # instead of protecting it, whatever fails later.
+                committed = True
+                # Backup removal is post-commit housekeeping: a failure
+                # keeps the outputs and reports the leftovers loudly.
                 leftover: list[Path] = []
                 for backup, _final in backups:
                     try:
@@ -654,13 +666,24 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
             finally:
                 input_file.close()
     except PairLoomError:
-        _rollback(writers, tmp_files, published, backups)
+        if not committed:
+            _rollback(writers, tmp_files, published, backups)
+        else:
+            _warn_committed()
         raise
     except OSError as exc:
-        _rollback(writers, tmp_files, published, backups)
-        raise OutputError(f"I/O failure: {exc}") from exc
+        if not committed:
+            _rollback(writers, tmp_files, published, backups)
+            raise OutputError(f"I/O failure: {exc}") from exc
+        _warn_committed()
+        raise OutputError(
+            f"post-commit failure after publication ({exc}); published outputs were kept"
+        ) from exc
     except Exception:
-        _rollback(writers, tmp_files, published, backups)
+        if not committed:
+            _rollback(writers, tmp_files, published, backups)
+        else:
+            _warn_committed()
         raise
 
     print(
@@ -733,6 +756,15 @@ def _drain_one(pending: deque, handle: Any) -> None:
         raise WorkerError(f"worker chunk failed: {exc}") from exc
     for result in results:
         handle(result)
+
+
+def _warn_committed() -> None:
+    """Post-commit failure notice: outputs are complete and stay in place."""
+    print(
+        "pairmerge: warning: failure after publication; all outputs were "
+        "already published and are kept (no rollback).",
+        file=sys.stderr,
+    )
 
 
 def _rollback(

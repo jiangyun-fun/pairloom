@@ -148,7 +148,9 @@ values PairLoom writes, so capping our own output MAPQ cannot disqualify a
 pair whose input evidence was strong.
 
 Adjusted records keep their strand, flags (0x2 recomputed), mate
-coordinates, and TLEN consistently updated; `NM`/`MD` are recomputed for
+coordinates, and TLEN consistently updated (equal-start mates get
+opposite-sign TLEN with read1 positive, per the SAM spec); `NM`/`MD` are
+recomputed for
 moved (always exact) placements as `NM:i:0` / `MD:<span>`; stale scoring
 tags that cannot be reproduced faithfully (`AS`, `XS`, `SA`, `MC`, `XA`)
 are removed rather than guessed at. `MQ` (mate MAPQ) is the exception:
@@ -272,9 +274,10 @@ overwrite it and fails loudly with a suggestion to pick another tag.
   as complete. Under `--force`, pre-existing outputs are moved aside before
   publication and restored if the run fails, so a failed run never destroys
   the previous results. Once every output is published the run has
-  committed: backup removal after that point is best-effort, and a cleanup
-  failure keeps the committed outputs in place while reporting the leftover
-  backup files on stderr. Index files (`.bai`, only with `--index-output`, which
+  committed and no later failure can delete the published outputs:
+  backup-removal failures warn about the leftover `.pairloom-bak-*` files
+  and exit 0, and any other post-commit failure warns, exits 1, and leaves
+  the outputs in place. Index files (`.bai`, only with `--index-output`, which
   implies `--sort-output`) are published with the same discipline and are
   validated like every other output: an existing index requires `--force`,
   and an index path colliding with another requested output is rejected
@@ -342,7 +345,7 @@ whole BAM is never loaded.
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (143 tests, all 35 spec scenarios)
+pixi run test          # full pytest suite (147 tests, all 35 spec scenarios)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark

@@ -70,13 +70,22 @@ class TestPairAwareOptimization:
         assert r1.next_reference_start == LONG_REPEAT
         assert r2.next_reference_start == LONG_REPEAT
         assert r1.template_length == 16
-        assert r2.template_length == 16  # equal starts: both positive
+        assert r2.template_length == -16  # equal starts: read1 positive (SAM)
         # Ambiguous repeats: conservative MAPQ on both mates.
         assert r1.mapping_quality <= 3
         assert r2.mapping_quality <= 3
         stats = fx.read_parquet(out["read_stats_parquet"])
         by_type = dict(zip(stats["type"], stats["count"], strict=False))
         assert by_type["mergeable"] == 1  # 16 >= min-overlap 10
+
+    def test_colocated_mates_tlen_signs(self, fx) -> None:
+        """SAM TLEN: identical coordinates still get opposite signs (read1 +)."""
+        fx.write_bam_and_set(fx.pair("tlen", UNIQUE, UNIQUE, read_len=20))
+        code, out = fx.run(mode="adjust")
+        assert code == 0
+        by_flag = {r.flag & 0xC0: r for r in fx.read_bam(out["adjusted_bam"])}
+        assert by_flag[0x40].template_length == 20
+        assert by_flag[0x80].template_length == -20
 
     def test_moved_read_with_stale_aligner_tags(self, fx) -> None:
         """Stale aligner tags on moved reads are removed, not crashed on.
