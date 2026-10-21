@@ -241,8 +241,10 @@ def _both_mapped(
         _apply_placement(r2, choice.p2, choice.n_equiv2, choice.truncated, state)
         proper = True
     else:
-        _apply_placement(r1, cands1.placements[0], len(cands1.placements), cands1.truncated, state)
-        _apply_placement(r2, cands2.placements[0], len(cands2.placements), cands2.truncated, state)
+        # No valid candidate-pair combination: keep the ORIGINAL BAM
+        # placements (never slide mates independently).
+        _apply_placement(r1, cands1.current, len(cands1.placements), cands1.truncated, state)
+        _apply_placement(r2, cands2.current, len(cands2.placements), cands2.truncated, state)
         proper = False
     _sync_mate_fields(r1, r2)
     _set_proper_flag(r1, proper)

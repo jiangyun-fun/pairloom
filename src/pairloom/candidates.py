@@ -34,6 +34,8 @@ class CandidateSet:
 
     placements: tuple[Placement, ...]
     truncated: bool
+    #: the placement the BAM itself carries (always part of ``placements``)
+    current: Placement | None = None
 
 
 def normalize_record_cigar(cigar: list[tuple[int, int]] | None) -> tuple[tuple[int, int], ...]:
@@ -74,9 +76,9 @@ def discover_candidates(
     current = Placement(tid=tid, pos0=pos0, cigar=cigar, score=score, exact=exact)
 
     if cfg.candidate_source == "bam":
-        return CandidateSet((current,), False)
+        return CandidateSet((current,), False, current)
     if not exact or not slidable_cigar(cigar):
-        return CandidateSet((current,), False)
+        return CandidateSet((current,), False, current)
 
     block = aligned_block(cigar, query_seq)
     if len(block) != span:  # pragma: no cover - slidable cigars guarantee this
@@ -85,7 +87,7 @@ def discover_candidates(
     lo = max(0, pos0 - cfg.realign_window)
     hi = min(contig_len - span, pos0 + cfg.realign_window)
     if hi < lo:
-        return CandidateSet((current,), False)
+        return CandidateSet((current,), False, current)
     window_seq = refcache.fetch(contig, lo, hi + span)
     occurrences: list[int] = []
     idx = window_seq.find(block)
@@ -99,7 +101,7 @@ def discover_candidates(
     placements = tuple(
         Placement(tid=tid, pos0=p, cigar=cigar, score=len(block), exact=True) for p in kept
     )
-    return CandidateSet(placements, truncated)
+    return CandidateSet(placements, truncated, current)
 
 
 def single_read_leftmost(cands: CandidateSet) -> Placement:

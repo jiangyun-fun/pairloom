@@ -1,0 +1,24 @@
+# PairLoom benchmark results
+
+- pairs: 20,000, reference: 2,000,000 bp, chunk size: 256
+- input: 20% repeat-island pairs, 2% both-unmapped templates, 0.2%/base SNVs
+
+## Scaling
+
+| threads | seconds | pairs/s | peak RSS (MiB) |
+| --- | --- | --- | --- |
+| 1 | 7.6 | 2,642 | 223 |
+| 2 | 4.9 | 4,092 | 258 |
+| 4 | 3.5 | 5,782 | 259 |
+
+## Stage profile (single thread, cumulative seconds)
+
+| stage | seconds |
+| --- | --- |
+| bam_read_and_grouping | 0.22 |
+| candidate_discovery | 2.55 |
+| pair_optimization | 1.41 |
+| overlap_analysis | 2.33 |
+| consensus_merge | 4.95 |
+| parquet_aggregation | 0.92 |
+| record_processing | 13.73 |
