@@ -1,0 +1,105 @@
+---
+title: "PairLoom implementation plan"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+# Objective
+
+Implement PairLoom (`pairmerge` CLI): a production-quality, high-performance
+Python package for pair-aware BAM realignment, overlap analysis, and read
+merging, per the full specification (15 sections). Correctness, determinism,
+bounded memory, and fail-loud error handling are first-class.
+
+# Scope
+
+- Package: `src/pairloom/` (hatchling, Python >= 3.12, deps: pysam, pyarrow,
+  numpy; dev: pytest, pytest-timeout, ruff, samtools for independent BAM
+  validation).
+- CLI `pairmerge` with `--mode {adjust,merge}` and explicit per-output paths.
+- Two Parquet outputs with exact documented schemas (pyarrow, ZSTD default,
+  batched writes, spill-to-disk aggregation for disagreements).
+- BAM outputs: adjusted / merged / unmerged, atomic publish, optional
+  coordinate sort + index.
+- Tests covering all 35 mandatory scenarios (synthetic fixtures, failure
+  injection, determinism across thread counts, schema checks).
+- Benchmarks: reproducible script + measured results; README with algorithms,
+  policies, defaults, limitations.
+
+# Key design decisions (selected defaults, spec §15)
+
+1. Record policy: only primary alignments participate in adjustment/merging.
+   Secondary/supplementary pass through unchanged; templates carrying them are
+   not merged (explicit reason `non_primary_records`), so nothing is discarded
+   or duplicated.
+2. Candidate discovery: BAM placements plus (default) reference-based sliding
+   of exact-match ungapped blocks within `--realign-window` (leftmost-first,
+   deterministic, capped by `--max-candidates-per-read`, truncation flagged).
+   Mismatch/indel-bearing alignments are not slid (documented limitation).
+3. MAPQ policy (documented table): ambiguity -> min(orig,3); truncated search
+   -> min(orig,10); unchanged -> preserve; changed exact match corroborated by
+   original MAPQ >= 30 -> 60; else min(orig,25). Optional compat flag forces
+   60 for exact matches with an explicit warning.
+4. Adjust mode still evaluates mergeability for classification/tagging, but
+   emits no consensus records.
+5. Status-tag collision: existing tag value that is not a PairLoom
+   classification string -> loud ConfigurationError (no silent overwrite).
+6. Merge requires identical RG when both mates carry one, else reason
+   `rg_conflict`; merged record keeps flags=0, qname preserved, MAPQ=min(mates).
+7. Consensus quality model: agree -> min(q1+q2, cap); disagree with
+   delta >= min-quality-difference -> higher-qual base at min(q_hi, cap);
+   unresolved -> `N` at low quality (policy `quality`) or unmergeable
+   (policy `strict`).
+8. Coordinate-sorted input is name-sorted to a temp file for streaming mate
+   grouping; outputs are written in template order (or coordinate order with
+   `--sort-output`).
+9. Parallelism: chunk-of-templates work units, ProcessPoolExecutor (spawn),
+   results consumed in submission order -> deterministic outputs; worker
+   exceptions propagate and abort the run with nonzero exit.
+
+# Planned steps
+
+1. Scaffold: pyproject.toml, pixi deps + tasks, package skeleton, CLI with
+   full validation surface.
+2. Core modules: exceptions, config, reference cache, CIGAR ops (NM/MD
+   recompute), candidate discovery, joint pair optimization, MAPQ policy.
+3. Overlap/disagreement analysis, classification + tagging, spilling Parquet
+   aggregation.
+4. Consensus merging + CIGAR reconstruction + merged-record semantics.
+5. Pipeline orchestration: streaming, workers, atomic publish, cleanup.
+6. Test suite (35 scenarios) + samtools quickcheck validation.
+7. Benchmarks + README + docs; requirements audit; this plan rewritten to
+   match reality; final report.
+
+# Files to touch
+
+- `pyproject.toml`, `pixi.toml`, `src/pairloom/*.py` (12 modules),
+  `tests/*.py` (conftest + ~10 files), `benchmarks/benchmark.py`,
+  `README.md`, `docs/plans/*`, `docs/misc/*`.
+
+# Risks
+
+- CIGAR/index arithmetic on reverse-strand reads (mitigate: normalize to
+  reference orientation by reverse-complement + reversed CIGAR early; hand
+  computed test expectations).
+- pysam serialization for IPC (mitigate: SAM-line strings + header dict).
+- MAPQ policy must never overstate uniqueness (covered by dedicated tests).
+- Benchmark runtime must stay bounded (50k default pairs, configurable).
+
+# Verification criteria
+
+- All pytest suites pass (`pixi run test`).
+- samtools quickcheck on every generated BAM in integration tests.
+- Determinism: threads 1 vs 4 produce identical records + Parquet data.
+- Spec acceptance criteria 1-22 each covered by at least one test.
