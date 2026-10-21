@@ -410,3 +410,30 @@ Packages: None.
 Environments: none.
 
 Git: 1 commit in the project repo (this audit entry).
+
+## Write AGENTS.md
+
+```
+level: medium
+date: 2026-10-21
+```
+
+### description
+
+Write a proper agent-guidance file (AGENTS.md) at the repo root, grounded in the actual pixi tasks, module layout, and the project's hard-won invariants.
+
+### result
+
+1. Implemented AGENTS.md: pixi command table (verified against pixi.toml), repo layout with module roles, eight critical invariants from the bug history, plus regression/benchmark/git conventions.
+2. Answered: no project CLAUDE.md existed; AGENTS.md follows the cross-tool convention and stays factual (no hook-dependent workflow mandates).
+
+### change
+
+Files:
+- Created: `AGENTS.md` (102 lines)
+
+Packages: None.
+
+Environments: none.
+
+Git: 1 commit in the project repo (`2fd6844`), not pushed.
