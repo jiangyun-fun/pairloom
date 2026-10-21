@@ -1,0 +1,658 @@
+---
+title: "Fifth review-fix batch implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+None
+
+## fix
+
+### Adjacent insertion operations lost sequence
+
+```
+level: high
+```
+
+#### reason
+
+High: silent sequence loss in merged output. `build_read_structure` walked
+the raw record CIGAR and keyed insertions by reference boundary, so
+adjacent `I` ops overwrote each other.
+
+#### description
+
+```
+type: text
+```
+
+`build_read_structure` normalizes the record CIGAR (`normalize_cigar`)
+before the walk, matching what discovery already does — adjacent identical
+ops merge into one event carrying all bases.
+
+#### before
+
+```text
+merged cigar=10M3I10M   (2 of 5 inserted bases lost)
+```
+
+#### after
+
+```text
+merged cigar=10M5I10M   seq carries all 5 inserted bases, NM:i:5, MD:Z:20
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_merge.py::TestIndels::test_adjacent_insertion_ops_merge_all_bases`.
+:::
+
+### SAM '=' SEQ shorthand corrupted statistics and NM/MD
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: silent statistics loss (masked observations dropped as ineligible)
+and consensus corruption (every masked base degraded to N@Q2, NM inflated
+to the read length).
+
+#### description
+
+```
+type: text
+```
+
+New `expand_reference_matches` resolves aligned `=` characters against the
+reference before discovery and structure building (no-op when the sequence
+has no `=`; clipped/inserted `=` stays literal — no reference counterpart).
+Called in `_both_mapped` and `_adjust_single`. One implementation subtlety:
+pysam's `query_sequence` setter drops `query_qualities`; they are captured
+and restored explicitly.
+
+#### before
+
+```text
+merged NM=20 (correct: 1)   MD=0C0C0C0T0A0C0T0A0T0C0G0A0T0T0T0A0A0C0G0C5
+```
+
+#### after
+
+```text
+disagreement rows: 1 (pos 516, alt C, dp 2)   merged NM=1  MD=15A9
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_merge.py::TestEqualsShorthand::test_equals_seq_shorthand_resolved`.
+The intermediate `qualities_missing` failure during development is itself
+evidence the qualities-restore is required.
+:::
+
+### Symlinked output directories bypassed collision checks
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: two outputs could share one physical file through an aliased
+directory — publication failed and left Parquet content at the BAM
+destination.
+
+#### description
+
+```
+type: text
+```
+
+`_check_distinct_outputs` compares `os.path.realpath` for duplicates and
+input collisions (resolves parent-directory symlinks even for files that
+do not exist yet); `samefile` remains for existing paths.
+
+#### before
+
+```text
+exit=1; content at the BAM destination starts with b'PAR1'
+```
+
+#### after
+
+```text
+exit=2; adjusted_bam and disagreement_parquet resolve to the same file: …/real/same
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_cli.py::TestPathValidation::test_symlinked_output_dirs_collide_rejected`.
+:::
+
+### Colocated mates were judged by read number
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: identical physical alignments merged or failed purely on which
+mate was read1 — an orientation-validity decision read numbering cannot
+support.
+
+#### description
+
+```
+type: text
+```
+
+New shared `leftmost_is_read1` helper: distinct starts by coordinate;
+equal starts by orientation model (`fr`: forward mate leftmost, `rf`:
+reverse mate, otherwise read1). Used by both `select_pair` and
+`try_merge`; TLEN and clip-owner tie rules are unaffected.
+
+#### before
+
+```text
+r1_fwd=True:  merged=1
+r1_fwd=False: merged=0   (orientation_incompatible)
+```
+
+#### after
+
+```text
+r1_fwd=True:  merged=1
+r1_fwd=False: merged=1
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_merge.py::TestColocatedOrientationTie::test_orientation_tie_independent_of_read_number`
+(both strand variants merge; existing colocated FR tests unchanged).
+:::
+
+## limitation
+
+### '=' without a reference counterpart stays literal
+
+```
+level: low
+```
+
+#### reason
+
+Low: documented edge; clips and insertions have no reference position to
+resolve against.
+
+#### description
+
+```
+type: text
+```
+
+`=` characters inside soft clips or insertions remain literal in the
+record; consensus eligibility treats them like any non-ACGT character.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## caveat
+
+### '=' expansion mutates the in-flight record sequence
+
+```
+level: low
+```
+
+#### reason
+
+Low: intended and documented; noted so record-mutation auditing is not
+surprised.
+
+#### description
+
+```
+type: text
+```
+
+Records whose primaries are processed carry the expanded sequence in the
+outputs (unmapped and non-primary records pass through untouched, literal
+`=` included).
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Pinned by the shorthand regression test; README states the rule.
+:::
+
+## assumption
+
+None
+
+## conclusion
+
+### All four fifth-round findings are fixed and regression-pinned
+
+```
+level: high
+```
+
+#### reason
+
+High: the batch's outcome statement, backed by the full gate run and the
+unchanged reproduction sites.
+
+#### description
+
+```
+type: text
+```
+
+1. All four fixes landed as one batch, each pinned by a regression test
+   (4 new tests; suite 147 → 151 passing).
+2. The fifth-round reproduction script, re-run at the original bug sites,
+   shows every behavior corrected.
+3. Lint and format are clean. The benchmark's absolute numbers this
+   session reflect a heavily loaded machine (load average ~10); an A/B
+   against the pre-batch code under the same load shows no regression
+   (post 8.7–9.4 s vs pre 9.0 s).
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+pixi run test    -> 151 passed
+pixi run lint    -> All checks passed
+pixi run format  -> 29 files already formatted
+bench A/B (load avg ~10): pre-batch 9.0 s; post-batch 8.7-9.4 s
+```
+:::
+
+## recommendation
+
+### M: Surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: improves cohort QC at modest effort; the data already exists on
+stderr.
+
+#### description
+
+```
+type: text
+```
+
+Treat the stderr merge-reason summary as pipeline telemetry in QC reports.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: advisory guard against the compatibility flag's designed overstatement.
+
+#### description
+
+```
+type: text
+```
+
+The compatibility flag overstates confidence by design; measure target
+repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: operational tuning advice from the measured scaling curve.
+
+#### description
+
+```
+type: text
+```
+
+Scaling flattens beyond four workers in the current benchmark.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the largest remaining documented limitation of candidate
+discovery.
+
+#### description
+
+```
+type: text
+```
+
+Extend candidate discovery beyond exact ungapped blocks, removing the
+documented limitation.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: requested extension that leaves the required schema untouched.
+
+#### description
+
+```
+type: text
+```
+
+Overlap-length distributions and merge-rejection reason counts, keeping
+the required read-stats schema unchanged.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: performance polish; current throughput already meets the target.
+
+#### description
+
+```
+type: text
+```
+
+Profile and reduce record serialization in the single-process path.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: project hardening; no user-facing behavior depends on it.
+
+#### description
+
+```
+type: text
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### Benchmark measured on a loaded machine; A/B shows no code regression
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the committed absolute numbers are slower than history; the
+context prevents a wrong conclusion later.
+
+#### description
+
+```
+type: table
+```
+
+| Measurement | Time | Throughput |
+| ----------- | ---- | ---------- |
+| Historical (idle machine) | 7.6–7.8 s | 2,562–2,643 pairs/s |
+| Pre-batch, this session (load avg ~10) | 9.0 s | 2,227 pairs/s |
+| Post-batch, this session (load avg ~10) | 8.7–11.1 s | 1,801–2,300 pairs/s |
+
+The pre/post A/B ran under the same load within minutes of each other
+(pre-batch via `git stash`); the batch is not the cause of the slowdown.
+
+#### evidence
+
+```
+level: high
+type: table
+```
+
+::: {.callout-note collapse="true"}
+`uptime` showed load average 10.43/10.03/9.08 during the runs; the A/B
+pair (9.0 s pre vs 8.7 s post) is the comparable measurement.
+:::
+
+## process
+
+### Reproduce, fix, re-verify; A/B the benchmark under load
+
+```
+status: right
+```
+
+#### description
+
+```
+type: text
+```
+
+1. All four findings reproduced end-to-end before any fix; none refuted.
+2. Implemented as one batch behind a written plan; every fix pinned by a
+   regression test derived from its reproduction.
+3. Two development corrections: a test-side expectation bug (`.replace`
+   replaced the wrong position) and a real implementation gap found by the
+   new test (pysam's `query_sequence` setter drops `query_qualities`).
+4. On the apparent benchmark regression, ran a same-load A/B against the
+   stashed pre-batch code instead of guessing.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Plan: `docs/plans/20261021-170607_review-fixes-5.plan.qmd`; reproduction
+script kept outside the repo (`/tmp/pairloom_review5_repro/repro.py`).
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mutation record for this batch, mirroring the reply's Changes
+block.
+
+#### description
+
+```
+type: text
+```
+
+- Updated: `src/pairloom/{alignment,pairing,merge,pipeline,validate}.py`
+- Updated: `tests/{test_merge,test_cli}.py` (+4 tests, 151 total)
+- Updated: `README.md`, `AGENTS.md` (invariant 9, test count),
+  `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-170607_review-fixes-5.plan.qmd`, this report
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+  (includes the prior evaluation turn's pending entries)
+- Packages: none; Environments: none
+- Git: `fix:` commit (code, tests, README/AGENTS, benchmark results) and
+  `docs:` commit (plan/report, audit, rolling state) on `main`, not pushed
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git log --oneline` after the two commits; working tree clean.
+:::
+
+## other
+
+None

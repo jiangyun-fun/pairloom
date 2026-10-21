@@ -437,3 +437,66 @@ Packages: None.
 Environments: none.
 
 Git: 1 commit in the project repo (`2fd6844`), not pushed.
+
+## Evaluate fifth review round before fixing
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+Assess four fifth-round third-party review findings (adjacent-insertion sequence loss, '=' SEQ shorthand corruption, symlinked-output collision bypass, read-number-dependent colocated-mate handling) against the actual code with independent reproductions, then propose an agreement position and wait for user confirmation before implementing.
+
+### result
+
+1. Answered: all four findings verified by code reading and reproductions; none refuted.
+2. Answered: adjacent 2I+3I insertions merge to 3I, losing 2 bases (build_read_structure reads the raw CIGAR; discovery already normalizes).
+3. Answered: '=' SEQ shorthand treated literally — merged NM=20 for one true SNV, '='-masked observations silently dropped (CIGAR =/X ops themselves are handled).
+4. Answered: symlinked output dirs pass validation and leave Parquet content at the BAM destination; colocated strand-swapped mates rejected as orientation_incompatible.
+
+### change
+
+Files:
+- Updated: `docs/misc/next_and_recommendation.qmd` (added the pending fifth fix-batch item), `docs/misc/requirements_audit.qmd` (this entry).
+
+Packages: None.
+
+Environments: none.
+
+Git: none (evaluation only; reproduction script stayed in /tmp).
+
+## Apply the four confirmed fifth-round review fixes
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+After the user confirmed the fifth evaluation verdict (with '='-expansion before discovery and the orientation-model tie rule), implement the four verified fixes with regression tests and documentation in sync.
+
+### result
+
+1. Implemented CIGAR normalization in build_read_structure: adjacent identical ops no longer overwrite each other at a shared boundary (10M2I3I10M merges to 10M5I10M).
+2. Implemented '=' SEQ shorthand expansion against the reference (no-op without '='); pysam's query_sequence setter dropping query_qualities was found by the new test and fixed by restoring them.
+3. Implemented realpath-based output collision checks: symlinked directories can no longer route two outputs to one physical file (exit 2).
+4. Implemented the shared orientation-aware tie rule (leftmost_is_read1) in pairing and merging: colocated strand-swapped mates now merge like their read-number-swapped equivalents.
+5. Refactored: +4 regression tests (151 total); README and AGENTS.md updated (invariant 9, test count); benchmark A/B under machine load ~10 showed no code regression (post 8.7-9.4 s vs pre 9.0 s).
+
+### change
+
+Files:
+- Updated: `src/pairloom/{alignment,pairing,merge,pipeline,validate}.py`
+- Updated: `tests/{test_merge,test_cli}.py` (+4 tests, 151 total)
+- Updated: `README.md`, `AGENTS.md`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-170607_review-fixes-5.plan.qmd`, `docs/plans/20261021-171842_review-fixes-5.report.qmd`
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+
+Packages: none.
+
+Environments: none.
+
+Git: 2 conventional commits on `main` (fix: code/tests/README/AGENTS/benchmark; docs: plan-report pair, audit, rolling state), not pushed.

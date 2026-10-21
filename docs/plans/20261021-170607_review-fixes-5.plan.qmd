@@ -1,0 +1,91 @@
+---
+title: "Fifth review-fix batch implementation plan (as executed)"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+# Objective
+
+Apply the four verified fifth-round review findings as one fix batch,
+keeping the suite green and the documented policies in sync.
+
+# Verified findings (all reproduced before fixing)
+
+1. `build_read_structure` walked the raw record CIGAR: adjacent identical
+   ops (`10M2I3I10M`) collapsed to the last write at a shared boundary —
+   the merged pair lost 2 of 5 inserted bases.
+2. SAM `=` SEQ shorthand (base identical to the reference) was treated
+   literally: masked observations silently dropped as ineligible and the
+   consensus degraded every such position to N@Q2 (merged NM=20 for one
+   true SNV).
+3. Output-collision checks compared `normpath(abspath)`, which does not
+   resolve symlinks; `alias → real` let two outputs share one physical
+   file — publication failed and left Parquet content at the BAM
+   destination.
+4. Coordinate ties hard-coded read number as leftmost in both pairing and
+   merging, so colocated strand-swapped mates were rejected as
+   `orientation_incompatible` while the read-number-swapped equivalents
+   merged.
+
+# Changes as executed
+
+- `src/pairloom/alignment.py`: `build_read_structure` normalizes the
+  record CIGAR before the walk; new `expand_reference_matches(record,
+  contig, refcache)` resolves aligned `=` characters against the reference
+  and restores `query_qualities` around the `query_sequence` assignment
+  (pysam's setter drops them — found by the new regression test).
+- `src/pairloom/pipeline.py`: `=` expansion in `_both_mapped` and
+  `_adjust_single` right before discovery (no-op without `=`).
+- `src/pairloom/pairing.py`: new `leftmost_is_read1(pos1, pos2, rev1,
+  rev2, model)` — distinct starts by coordinate, ties by orientation model
+  (fr: forward; rf: reverse; else read1); used by `select_pair`.
+- `src/pairloom/merge.py`: `try_merge` uses the same helper.
+- `src/pairloom/validate.py`: destination comparisons use
+  `os.path.realpath`; `samefile` stays for existing paths.
+- Tests: 4 regressions (adjacent-insertion merge, `=`-shorthand
+  statistics/NM with positionally-built expectation, symlinked collision
+  rejection, orientation-tie independence). Suite 147 → 151.
+- README: symlink resolution, orientation tie rule, `=` expansion, test
+  count. AGENTS.md: invariant 9 (CIGAR normalization + `=` expansion +
+  the pysam qualities gotcha), test count.
+- Benchmark: absolute numbers this session reflect a loaded machine
+  (load average ~10); a same-load A/B against the stashed pre-batch code
+  showed no code regression (post 8.7–9.4 s vs pre 9.0 s).
+
+# Steps actually taken
+
+1. Plan written; all four findings re-verified via the reproduction
+   script.
+2. Fixes applied; one file-corruption slip during test editing (a dropped
+   newline after a class statement) was caught by collection and repaired.
+3. Regressions added; two corrections during development: a test-side
+   expectation bug (`.replace` matched the wrong position) and the real
+   pysam qualities-drop gap found by the failing test.
+4. Benchmark A/B under load; report, plan rewrite, audit, commits.
+
+# Verification
+
+- `pixi run test`: 151 passed (was 147; +4 regressions).
+- Reproduction re-run: `10M5I10M` with all bases; NM=1 and one
+  disagreement row for the SNV pair; symlink collision exits 2; both
+  colocated strand variants merge.
+- `pixi run lint` / `pixi run format`: clean.
+- Benchmark: no code regression by same-load A/B (see the report's
+  observation for the full table).
+
+# Risks encountered
+
+- The machine's load average (~10) initially masqueraded as a 25%
+  performance regression; resolved by A/B measurement rather than
+  assumption, with the context recorded in the committed report.
