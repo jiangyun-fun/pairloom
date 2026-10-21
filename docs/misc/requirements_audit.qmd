@@ -290,3 +290,32 @@ Packages: none.
 Environments: none.
 
 Git: 2 conventional commits on `main` (fix: code/tests/README/benchmark; docs: plan-report pair, audit, rolling state), not pushed.
+
+## Refresh /tmp archive and tarball with third-batch commits
+
+```
+level: low
+date: 2026-10-21
+```
+
+### description
+
+Bring /tmp/pairloom-archive and the dated tarball under /tmp/archives/ up to date with the third fix batch and its docs commit, keeping the truncated-history rule and the existing rewritten commit hashes; repack the tarball.
+
+### result
+
+1. Implemented incremental refresh via fetch + cherry-pick: the archive now holds 7 commits (9bc3592..3e7fc45); earlier rewritten hashes unchanged.
+2. Answered: the docs cherry-pick conflicted on requirements_audit.qmd (a prior refresh's audit entry was never archived); resolved to the incoming version — the exact union.
+3. Verified the archive tip tree equals the original main tree (cee6e78…); all original-history objects pruned after reflog expiry and gc.
+4. Repacked `/tmp/archives/pairloom-archive-20261021.tar.gz` (285 KB, 96 entries, .git included); the 15:32 `pairloom-archive.tar.gz` remains untouched.
+
+### change
+
+Files:
+- Updated (outside the repo): `/tmp/pairloom-archive/` (7 commits), `/tmp/archives/pairloom-archive-20261021.tar.gz` (repacked).
+
+Packages: None.
+
+Environments: none.
+
+Git: 1 commit in the project repo (this audit entry).
