@@ -1,9 +1,36 @@
-# pixi environments
+# pixi environments (keep workspace config)
 .pixi/*
 !.pixi/config.toml
 
-# build outputs
+# python bytecode and packaging
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
 dist/
-# rendered report artifacts (never commit)
+wheels/
+
+# test and tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# rendered report artifacts (never commit; regenerate with quarto render)
 *.report.html
 *_files/
+
+# benchmark generated data (regenerate with `pixi run bench`;
+# keep the durable results: RESULTS.md and benchmark.parquet)
+benchmarks/results/data/
+benchmarks/results/t*/
+benchmarks/results/profile/
