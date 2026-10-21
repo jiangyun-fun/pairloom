@@ -198,3 +198,32 @@ Packages: none.
 Environments: none.
 
 Git: 2 conventional commits on `main` (fix: code/tests/README/benchmark; docs: plan-report pair and audit), not pushed.
+
+## Refresh /tmp archive and add tarball
+
+```
+level: low
+date: 2026-10-21
+```
+
+### description
+
+Bring /tmp/pairloom-archive up to date with the three commits made after the original archive (audit entry, second fix batch, second docs batch), keeping the truncated-history rule (only post-e66a0d0 content) and the existing rewritten commit hashes; additionally pack the refreshed archive as a dated .tar.gz under /tmp/archives/.
+
+### result
+
+1. Implemented incremental refresh via fetch + cherry-pick: the archive now holds 5 commits (9bc3592..01af492); the original two rewritten hashes are unchanged.
+2. Verified the archive tip tree equals the original main tree (b6ba6da…), so content is byte-identical.
+3. Verified all pre-e66a0d0 and intermediate original-history objects remain physically pruned after reflog expiry and gc.
+4. Created `/tmp/archives/pairloom-archive-20261021.tar.gz` (264 KB, 95 entries, .git included); an earlier `pairloom-archive.tar.gz` from 15:32 predates this refresh and was left untouched.
+
+### change
+
+Files:
+- Created (outside the repo): `/tmp/archives/pairloom-archive-20261021.tar.gz`; updated `/tmp/pairloom-archive/` (5 commits).
+
+Packages: None.
+
+Environments: none.
+
+Git: 1 commit in the project repo (this audit entry).
