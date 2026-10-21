@@ -105,6 +105,24 @@ class TestAmbiguousRepeatPair:
             assert rec.mapping_quality <= 3
             assert rec.mapping_quality != 60
 
+    def test_capped_pair_search_caps_mapq(self, fx) -> None:
+        """A truncated pair search must not imply uniqueness: no false 60.
+
+        With the default budget this repeat pair earns MAPQ 3 (many
+        equivalent placements); capping the search after one evaluation
+        hides those placements, so the truncation cap (min(orig, 10))
+        must apply instead.
+        """
+        pair = fx.pair("rep", LONG_REPEAT + 4, LONG_REPEAT + 16, read_len=16)
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(
+            mode="adjust",
+            extra=["--max-pair-evaluations", "1", "--max-candidates-per-read", "100"],
+        )
+        assert code == 0
+        for rec in fx.read_bam(out["adjusted_bam"]):
+            assert rec.mapping_quality <= 10
+
 
 class TestUniqueExact:
     def test_unique_read_preserves_mapq(self, fx) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import UNIQUE
+from conftest import LONG_REPEAT, UNIQUE
 
 
 def alt_bases(ref_base: str, n: int) -> list[str]:
@@ -124,6 +124,65 @@ class TestOuterSoftClips:
         rec = fx.read_bam(out["merged_bam"])[0]
         assert rec.cigarstring == "30M6S"
         assert rec.query_sequence == ref[UNIQUE : UNIQUE + 30] + "NNNNNN"
+
+    def test_container_owns_trailing_outer_clip(self, fx) -> None:
+        """A contained mate's trailing clip is internal and must be dropped.
+
+        R1 (40M3S at UNIQUE) fully contains R2's aligned span (10M2S at
+        UNIQUE+10). R2 starts later but ends earlier: the fragment's outer
+        trailing clip is R1's 3S, never R2's internal 2S.
+        """
+        ref = fx.ref_seqs["chr1"]
+        r1 = fx.make_record(
+            "cont",
+            0x1 | 0x40 | 0x2,
+            UNIQUE,
+            "40M3S",
+            ref[UNIQUE : UNIQUE + 40] + "NNN",
+            mate_contig="chr1",
+            mate_pos=UNIQUE + 10,
+        )
+        r2 = fx.make_record(
+            "cont",
+            0x1 | 0x80 | 0x10 | 0x20 | 0x2,
+            UNIQUE + 10,
+            "10M2S",
+            ref[UNIQUE + 10 : UNIQUE + 20] + "NN",
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        fx.write_bam_and_set([r1, r2])
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        rec = fx.read_bam(out["merged_bam"])[0]
+        assert rec.cigarstring == "40M3S"
+        assert rec.query_sequence == ref[UNIQUE : UNIQUE + 40] + "NNN"
+
+
+class TestMergedMapqPolicy:
+    def test_merged_mapq_is_conservative_adjusted(self, fx) -> None:
+        """The consensus MAPQ comes from the ADJUSTED values, not the input.
+
+        Both mates of this repeat pair are ambiguous (adjusted MAPQ 3), so
+        the merged record must carry 3 — never the original 60. Eligibility
+        still uses the original MAPQ (60 >= 20), so the pair merges at all.
+        """
+        pair = fx.pair("rm", LONG_REPEAT + 4, LONG_REPEAT + 16, read_len=16)
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        rec = fx.read_bam(out["merged_bam"])[0]
+        assert rec.reference_start == LONG_REPEAT
+        assert rec.mapping_quality <= 3
+
+    def test_unique_pair_merged_mapq_still_60(self, fx) -> None:
+        """Unique unchanged placements keep their original MAPQ in the consensus."""
+        pair = fx.pair("um", UNIQUE, UNIQUE + 5, read_len=20)
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        rec = fx.read_bam(out["merged_bam"])[0]
+        assert rec.mapping_quality == 60
 
 
 class TestQualityModel:

@@ -122,17 +122,19 @@ candidate combination was chosen.
 | Condition                                            | Adjusted MAPQ        |
 | ---------------------------------------------------- | -------------------- |
 | ≥ 2 equivalent-best placements remain                | `min(orig, 3)`       |
-| candidate discovery was truncated                    | `min(orig, 10)`      |
+| search truncated (discovery or pair evaluation)      | `min(orig, 10)`      |
 | placement unchanged                                  | `orig`               |
 | changed, verified exact, original MAPQ ≥ 30          | `60`                 |
 | changed, otherwise                                   | `min(orig, 25)`      |
 
 MAPQ 60 is therefore never assigned merely because an alignment is an
 exact match: the placement must also be unambiguous in the searched
-window, discovery must not have been truncated, and the original aligner
-must have considered the read high quality. `--force-mapq60-exact`
-(compatibility mode) assigns 60 to every exact match and prints an
-explicit warning about overstating mapping confidence.
+window, neither candidate discovery nor pair evaluation
+(`--max-pair-evaluations`) may have been truncated, and the original
+aligner must have considered the read high quality.
+`--force-mapq60-exact` (compatibility mode) assigns 60 to every exact
+match and prints an explicit warning about overstating mapping
+confidence.
 
 Note: the `--min-mapq` eligibility filters (for overlap observations and
 merging) apply to the **original** aligner MAPQ, not to the conservative
@@ -166,8 +168,10 @@ from the two original adjusted mates, before any consensus.
 
 Merging walks the reference span (never string concatenation):
 
-- outer soft clips (leftmost read's leading clip, rightmost read's
-  trailing clip, in reference orientation) are preserved with qualities;
+- outer soft clips are preserved with qualities: the leftmost read's
+  leading clip, and the trailing clip of the mate reaching the fragment's
+  rightmost reference position (a contained mate's trailing clip is
+  internal and dropped), both in reference orientation;
 - internal soft clips are dropped (the other mate's aligned bases cover
   those positions);
 - overlapping aligned bases appear exactly once;
@@ -193,10 +197,11 @@ Quality model (sequencing errors assumed independent):
   quality` (default) or make the pair unmergeable under `strict`.
 
 Merged records are synthetic single fragments: flag 0, the template's
-QNAME, `POS` = leftmost aligned reference coordinate, `MAPQ = min(mates)`,
-no mate coordinates, TLEN 0, `NM`/`MD` recomputed, `RG` preserved, the
-status tag set to `mergeable`. Unmerged outputs never duplicate a
-successfully merged template.
+QNAME, `POS` = leftmost aligned reference coordinate, `MAPQ = min of the
+two adjusted MAPQs` (the `--min-mapq` eligibility gate still uses the
+original aligner MAPQ), no mate coordinates, TLEN 0, `NM`/`MD` recomputed,
+`RG` preserved, the status tag set to `mergeable`. Unmerged outputs never
+duplicate a successfully merged template.
 
 ## Parquet schemas
 
@@ -255,7 +260,10 @@ overwrite it and fails loudly with a suggestion to pick another tag.
   writer succeeded. On any failure the temps and any already-published
   files are removed (best effort) — incomplete outputs are never presented
   as complete. Index files (`.bai`, only with `--index-output`, which
-  implies `--sort-output`) are published with the same discipline.
+  implies `--sort-output`) are published with the same discipline and are
+  validated like every other output: an existing index requires `--force`,
+  and an index path colliding with another requested output is rejected
+  before processing starts.
 - **Worker failures propagate**: multiprocessing workers' exceptions abort
   the whole run; apparently-successful-but-incomplete output is impossible.
 - Expected biological outcomes (no overlap, unmapped mates, conflicting
@@ -279,9 +287,12 @@ repeat islands, 2% both-unmapped templates, 0.2%/base SNVs, mode `merge`
 Memory stays bounded: templates stream in query-name order, chunked work
 units bound parallel IPC, disagreement aggregation holds at most
 `--max-aggregation-records` positions in memory before spilling sorted
-Parquet partials that are k-way merged at finalize, and reference contigs
-are cached under a base budget (contigs larger than the budget stream
-through HTSlib). The whole BAM is never loaded.
+Parquet partials, and finalize merges those partials lazily with a bounded
+fan-in (cascading merges when spills exceed it) — each open stream holds at
+most one Parquet batch of rows, so finalize memory is a function of
+configuration, never of dataset size. Reference contigs are cached under a
+base budget (contigs larger than the budget stream through HTSlib). The
+whole BAM is never loaded.
 
 ## Selected defaults for spec ambiguities (§15)
 
@@ -314,7 +325,7 @@ through HTSlib). The whole BAM is never loaded.
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (120 tests, all 35 spec scenarios)
+pixi run test          # full pytest suite (130 tests, all 35 spec scenarios)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark

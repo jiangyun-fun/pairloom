@@ -257,6 +257,11 @@ def _both_mapped(
 
     struct1 = build_read_structure(r1)
     struct2 = build_read_structure(r2)
+    # The records now carry the conservative ADJUSTED MAPQs; the consensus
+    # record takes its output MAPQ from those, never from the originals.
+    merged_mapq = min(struct1.mapq, struct2.mapq)
+    # Eligibility filters (min_mapq) continue to apply to the ORIGINAL
+    # aligner MAPQ (policy comment above).
     struct1.mapq = orig_mapq1
     struct2.mapq = orig_mapq2
     contig = state.contig(r1.reference_id)
@@ -269,7 +274,9 @@ def _both_mapped(
         for o in overlap.observations
     ]
 
-    outcome = try_merge(struct1, struct2, cfg, has_non_primary=bool(others))
+    outcome = try_merge(
+        struct1, struct2, cfg, has_non_primary=bool(others), merged_mapq=merged_mapq
+    )
     if isinstance(outcome, MergeSuccess):
         merged_record = _build_merged_record(r1.query_name, outcome, contig, state)
         return merged_record.to_string(), MERGEABLE, None, observations
@@ -356,6 +363,12 @@ def _adjust_single(record: Any, mate: Any | None, state: _WorkerState) -> None:
         mate.reference_start = record.reference_start
     record.next_reference_id = mate.reference_id
     record.next_reference_start = mate.reference_start
+    # The unmapped mate's RNEXT/PNEXT must follow the mapped mate's NEW
+    # locus; keeping the input value would point at the pre-adjustment
+    # position (SAM spec: an unmapped read's mate fields reference the
+    # mapped mate).
+    mate.next_reference_id = record.reference_id
+    mate.next_reference_start = record.reference_start
     _set_proper_flag(record, False)
     _set_proper_flag(mate, False)
 

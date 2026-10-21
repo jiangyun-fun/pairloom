@@ -126,6 +126,28 @@ class TestSelectPair:
         # Fragment bounds default 0..1000 keep most of the first 10 valid.
         assert choice is not None
 
+    def test_eval_budget_truncation_flags_choice(self) -> None:
+        """Hitting --max-pair-evaluations must mark the search truncated.
+
+        Unexplored combinations could hold equivalent placements, so the
+        MAPQ policy must not claim uniqueness (min(orig, 10) applies).
+        """
+        c1 = CandidateSet((placement(100, 50), placement(104, 50)), False)
+        c2 = CandidateSet((placement(110, 50),), False)
+        full = select_pair(c1, c2, rev1=False, rev2=True, cfg=cfg())
+        assert full is not None
+        assert full.truncated is False
+        capped = select_pair(c1, c2, rev1=False, rev2=True, cfg=cfg(max_pair_evaluations=1))
+        assert capped is not None
+        assert capped.truncated is True
+
+    def test_discovery_truncation_propagates(self) -> None:
+        c1 = CandidateSet((placement(100, 50),), True)
+        c2 = CandidateSet((placement(110, 50),), False)
+        choice = select_pair(c1, c2, rev1=False, rev2=True, cfg=cfg())
+        assert choice is not None
+        assert choice.truncated is True
+
     def test_overlap_len(self) -> None:
         a = placement(100, 50, span=20)
         b = placement(110, 50, span=20)

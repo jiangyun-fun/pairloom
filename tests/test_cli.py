@@ -166,6 +166,39 @@ class TestPathValidation:
             main(args + ["--parquet-compression", "brotli"])
         assert excinfo.value.code == 2
 
+    def test_existing_index_without_force_refused(self, one_pair_bam, fx, tmp_path) -> None:
+        """A stale .bai is an output like any other: overwriting needs --force."""
+        from pairloom.cli import main
+
+        out = tmp_path / "oi"
+        out.mkdir()
+        args = base_args(fx, out) + ["--index-output"]
+        assert main(args) == 0
+        idx = out / "a.bam.bai"
+        assert idx.read_bytes()[:4] == b"BAI\x01"
+        # Keep only the stale index; declared outputs are gone.
+        (out / "a.bam").unlink()
+        (out / "d.parquet").unlink()
+        (out / "s.parquet").unlink()
+        idx.write_bytes(b"stale")
+        assert main(args) == 2
+        assert idx.read_bytes() == b"stale"
+        assert main(args + ["--force"]) == 0
+        assert idx.read_bytes()[:4] == b"BAI\x01"
+
+    def test_index_colliding_with_output_rejected(self, one_pair_bam, fx, tmp_path) -> None:
+        """An index path equal to another requested output fails validation."""
+        from pairloom.cli import main
+
+        out = tmp_path / "oc"
+        out.mkdir()
+        args = base_args(fx, out, mode="merge")
+        # The unmerged BAM sits exactly where the merged BAM's index goes.
+        args[args.index("--unmerged-bam") + 1] = str(out / "m.bam.bai")
+        args += ["--index-output"]
+        assert main(args) == 2
+        assert not (out / "m.bam").exists()
+
 
 class TestSortAndIndex:
     def test_default_output_is_template_order_unindexed(self, one_pair_bam, fx) -> None:

@@ -95,6 +95,11 @@ def select_pair(
             valid.append((p1, p2, p1.score + p2.score, overlap_len(p1, p2), frag_start, frag_end))
         if evaluated >= cfg.max_pair_evaluations:
             break
+    # Hitting the evaluation budget means equivalent placements may remain
+    # unexplored: uniqueness cannot be claimed, so the truncation flag must
+    # reach the MAPQ policy. Ending exactly at the cap also counts as
+    # truncated (conservative direction).
+    search_truncated = evaluated >= cfg.max_pair_evaluations
     if not valid:
         return None
     best_score = max(entry[2] for entry in valid)
@@ -116,10 +121,5 @@ def select_pair(
         p2=chosen[1],
         n_equiv1=n_equiv1,
         n_equiv2=n_equiv2,
-        truncated=cands1.truncated or cands2.truncated,
+        truncated=cands1.truncated or cands2.truncated or search_truncated,
     )
-
-
-def single_read_ambiguity(cands: CandidateSet) -> int:
-    """Number of equivalent placements for an independently assessed read."""
-    return len(cands.placements)

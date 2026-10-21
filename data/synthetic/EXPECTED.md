@@ -31,7 +31,9 @@ outputs produced by the current version and validated by the test suite.
   `MD:Z:15A14`.
 - `pair_repeat` is jointly adjusted to (400, 400) — the leftmost
   full-overlap candidate pair in the period-4 repeat — and merges to
-  `16M`, `NM:i:0`, `MD:Z:16`, MAPQ capped to 3 on the pre-merge mates.
+  `16M`, `NM:i:0`, `MD:Z:16`; the consensus carries the conservative
+  MAPQ 3 (min of the two adjusted mate MAPQs — eligibility gates on the
+  original aligner MAPQ 60, the output never does).
 - `pair_far` stays unmerged with reason `insufficient_overlap`;
   `pair_half` keeps its two records with `ZC:Z:left_aligned_only`;
   `pair_none` records carry `ZC:Z:neither_aligned`.

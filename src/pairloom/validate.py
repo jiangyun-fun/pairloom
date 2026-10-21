@@ -21,6 +21,18 @@ def validate_paths(cfg: PairLoomConfig) -> None:
     _check_readable_file(cfg.input_path, "--input")
     _check_reference(cfg.reference_path)
     outputs = cfg.mode_outputs()
+    if cfg.index_output:
+        # Derived BAM indexes are outputs like any other: an existing index
+        # needs --force, and an index path must not collide with another
+        # requested output (the pipeline derives them as <bam>.bai).
+        outputs = {
+            **outputs,
+            **{
+                f"index for {role}": Path(str(path) + ".bai")
+                for role, path in outputs.items()
+                if role.endswith("_bam")
+            },
+        }
     _check_distinct_outputs(cfg, outputs)
     for role, path in outputs.items():
         _check_output_path(path, role, cfg.force)

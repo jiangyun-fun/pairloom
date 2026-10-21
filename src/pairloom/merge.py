@@ -79,8 +79,17 @@ def try_merge(
     struct2: ReadStructure,
     cfg: PairLoomConfig,
     has_non_primary: bool = False,
+    merged_mapq: int | None = None,
 ) -> MergeOutcome:
-    """Attempt to merge two adjusted mates into a consensus fragment."""
+    """Attempt to merge two adjusted mates into a consensus fragment.
+
+    ``struct1.mapq``/``struct2.mapq`` are the ELIGIBILITY MAPQs (the original
+    aligner MAPQs, gated by ``cfg.min_mapq``); ``merged_mapq`` is the record's
+    OUTPUT MAPQ. When omitted, the output MAPQ defaults to the eligibility
+    values so direct unit use keeps its historic meaning; the pipeline passes
+    the conservative adjusted MAPQs so a consensus record never overstates
+    mapping confidence.
+    """
     if has_non_primary:
         return MergeFailure(REASON_NON_PRIMARY)
     if struct1.hard_clipped or struct2.hard_clipped:
@@ -118,7 +127,11 @@ def try_merge(
     ops: list[tuple[int, int]] = []
 
     left = struct1 if left_is_read1 else struct2
-    right = struct2 if left_is_read1 else struct1
+    # The trailing outer clip belongs to the mate reaching the fragment's
+    # rightmost reference position. Its start position is not sufficient: a
+    # contained mate starts later but ends earlier, so its internal trailing
+    # clip must be dropped and the container's outer clip kept.
+    trail = struct1 if struct1.end0 >= struct2.end0 else struct2
 
     def emit(op: int, length: int, bases: str, quals: tuple[int, ...] | list[int]) -> None:
         if length <= 0:
@@ -167,7 +180,7 @@ def try_merge(
     if ins is not None:
         emit(CIGAR_I, len(ins[0]), ins[0], ins[1])
 
-    emit(CIGAR_S, len(right.trail_clip[0]), right.trail_clip[0], right.trail_clip[1])
+    emit(CIGAR_S, len(trail.trail_clip[0]), trail.trail_clip[0], trail.trail_clip[1])
     if not any(op in (CIGAR_M, CIGAR_I, CIGAR_D) for op, _ in ops):
         return MergeFailure(REASON_EMPTY)
     return MergeSuccess(
@@ -175,7 +188,7 @@ def try_merge(
         cigar=normalize_cigar(tuple(ops)),
         seq="".join(seq_parts),
         quals=tuple(qual_parts),
-        mapq=min(struct1.mapq, struct2.mapq),
+        mapq=merged_mapq if merged_mapq is not None else min(struct1.mapq, struct2.mapq),
         overlap_len=overlap,
         read_group=struct1.read_group or struct2.read_group,
     )

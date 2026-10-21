@@ -225,3 +225,47 @@ class TestRecordPolicy:
         stats = fx.read_parquet(out["read_stats_parquet"])
         by_type = dict(zip(stats["type"], stats["count"], strict=False))
         assert by_type["left_aligned_only"] == 1
+
+    def test_unmapped_mate_rnext_follows_movement(self, fx) -> None:
+        """After the mapped mate slides, RNEXT/PNEXT update on BOTH records.
+
+        The unmapped mate sits at the mapped read's locus; after the mapped
+        mate moves 404 -> 400 (leftmost placement in the tandem repeat), the
+        unmapped record's own next_reference_start must follow to 400 too —
+        not stay at the stale pre-adjustment position.
+        """
+        import pysam
+
+        from conftest import LONG_REPEAT
+
+        ref = fx.ref_seqs["chr1"]
+        r1 = fx.make_record(
+            "half",
+            0x1 | 0x40,
+            LONG_REPEAT + 4,
+            "16M",
+            ref[LONG_REPEAT + 4 : LONG_REPEAT + 20],
+            mate_contig="chr1",
+            mate_pos=LONG_REPEAT + 4,
+        )
+        hdr = pysam.AlignmentHeader.from_dict(fx.header_dict())
+        r2 = pysam.AlignedSegment(hdr)
+        r2.query_name = "half"
+        r2.flag = 0x1 | 0x80 | 0x4
+        r2.reference_id = 0
+        r2.reference_start = LONG_REPEAT + 4  # unmapped mate at mapped locus
+        r2.next_reference_id = 0
+        r2.next_reference_start = LONG_REPEAT + 4  # input points at OLD pos
+        r2.mapping_quality = 0
+        r2.query_sequence = "A" * 16
+        r2.query_qualities = pysam.qualitystring_to_array("I" * 16)
+        fx.write_bam_and_set([r1, r2])
+        code, out = fx.run(mode="adjust")
+        assert code == 0
+        recs = {r.flag & 0xC0: r for r in fx.read_bam(out["adjusted_bam"])}
+        mapped, unmapped = recs[0x40], recs[0x80]
+        assert mapped.reference_start == LONG_REPEAT  # slid to leftmost
+        assert unmapped.reference_start == LONG_REPEAT  # SAM convention locus
+        for rec in (mapped, unmapped):
+            assert rec.next_reference_id == 0
+            assert rec.next_reference_start == LONG_REPEAT

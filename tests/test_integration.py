@@ -208,6 +208,50 @@ class TestBoundedMemory:
         for row in table[:2]:
             assert row["af"] == pytest.approx(1 / 3)
 
+    def test_spill_finalize_memory_stays_bounded(self, tmp_path) -> None:
+        """Lazy, bounded-fan-in spill merge: finalize must not load the dataset.
+
+        100k positions with a 1000-entry threshold produce ~100 spills. The
+        previous eager-list finalize peaked around 145 bytes/row (~15 MB
+        here); the lazy cascade stays orders below that. The generous 10 MB
+        bound separates the two decisively and holds across machines.
+        """
+        import tracemalloc
+
+        import pyarrow.parquet as pq
+
+        from pairloom.config import PairLoomConfig
+        from pairloom.parquetout import DisagreementAggregator, _spill_stream
+
+        cfg = PairLoomConfig(
+            input_path=Path("i.bam"),
+            reference_path=Path("r.fa"),
+            mode="adjust",
+            adjusted_bam=Path("a.bam"),
+            disagreement_parquet=Path("d.parquet"),
+            read_stats_parquet=Path("s.parquet"),
+            max_aggregation_records=1000,
+            parquet_batch_size=8192,
+        )
+        agg = DisagreementAggregator(cfg)
+        agg.set_spill_dir(str(tmp_path))
+        for i in range(100_000):
+            disagrees = i % 500 == 0
+            agg.add_observation(0, i, "A", "C" if disagrees else "A", False, disagrees)
+        assert len(agg._spill_paths) >= 50
+        # Contract: spill files stream as iterators, never materialized lists.
+        pf = pq.ParquetFile(agg._spill_paths[0])
+        stream = _spill_stream(pf, 8192)
+        assert iter(stream) is stream
+        assert not isinstance(stream, list)
+        pf.close()
+        tracemalloc.start()
+        reported = agg.finalize(tmp_path / "final.parquet", ["chr1"])
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert reported == 200  # every 500th position disagrees
+        assert peak < 10_000_000, f"finalize peak {peak / 1e6:.1f} MB is not bounded"
+
 
 class TestIndependentValidation:
     @pytest.mark.skipif(shutil.which("samtools") is None, reason="samtools")
