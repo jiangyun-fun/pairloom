@@ -104,9 +104,7 @@ class _WorkerState:
             max_contigs=cfg.reference_cache_contigs,
             max_bases=cfg.reference_cache_bases,
         )
-        self.ref_names: list[str] = [
-            sq["SN"] for sq in (header.to_dict().get("SQ") or [])
-        ]
+        self.ref_names: list[str] = [sq["SN"] for sq in (header.to_dict().get("SQ") or [])]
 
     def contig(self, tid: int) -> str:
         try:
@@ -228,6 +226,12 @@ def _both_mapped(
         )
     cands1 = _discover(r1, state)
     cands2 = _discover(r2, state)
+    # Eligibility filters (min_mapq/min_base_quality) apply to the ORIGINAL
+    # aligner MAPQ, not to the conservative values PairLoom writes after
+    # adjustment: capping our own output MAPQ must not disqualify a pair
+    # whose input evidence was strong.
+    orig_mapq1 = r1.mapping_quality
+    orig_mapq2 = r2.mapping_quality
     choice = None
     if tid1 == tid2:
         choice = select_pair(cands1, cands2, r1.is_reverse, r2.is_reverse, cfg)
@@ -237,12 +241,8 @@ def _both_mapped(
         _apply_placement(r2, choice.p2, choice.n_equiv2, choice.truncated, state)
         proper = True
     else:
-        _apply_placement(
-            r1, cands1.placements[0], len(cands1.placements), cands1.truncated, state
-        )
-        _apply_placement(
-            r2, cands2.placements[0], len(cands2.placements), cands2.truncated, state
-        )
+        _apply_placement(r1, cands1.placements[0], len(cands1.placements), cands1.truncated, state)
+        _apply_placement(r2, cands2.placements[0], len(cands2.placements), cands2.truncated, state)
         proper = False
     _sync_mate_fields(r1, r2)
     _set_proper_flag(r1, proper)
@@ -255,6 +255,8 @@ def _both_mapped(
 
     struct1 = build_read_structure(r1)
     struct2 = build_read_structure(r2)
+    struct1.mapq = orig_mapq1
+    struct2.mapq = orig_mapq2
     contig = state.contig(r1.reference_id)
     lo = min(struct1.start0, struct2.start0)
     hi = max(struct1.end0, struct2.end0)
@@ -273,6 +275,12 @@ def _both_mapped(
 
 
 def _discover(record: Any, state: _WorkerState) -> Any:
+    """Discover candidate placements.
+
+    BAM SEQ/CIGAR are stored in reference orientation for both strands, so
+    base-level verification and exact-block sliding need no strand-specific
+    transform.
+    """
     cfg = state.cfg
     cigar = normalize_record_cigar(record.cigartuples)
     seq = record.query_sequence
@@ -298,22 +306,23 @@ def _apply_placement(
     truncated: bool,
     state: _WorkerState,
 ) -> None:
-    """Move a record to ``placement`` and update MAPQ/NM/MD consistently."""
+    """Move a record to ``placement`` and update MAPQ/NM/MD consistently.
+
+    Only exact-match placements are ever moved (discovery guarantees this),
+    so the rewritten tags are orientation-independent: NM=0 and MD=<span>.
+    Stale aligner scoring tags are removed rather than guessed at.
+    """
     cfg = state.cfg
     changed = placement.pos0 != record.reference_start
     if changed:
-        contig = state.contig(record.reference_id)
-        ref_seq = state.refcache.fetch(contig, placement.pos0, placement.end0)
-        md, nm = compute_md_nm(
-            placement.pos0,
-            placement.cigar,
-            record.query_sequence.upper(),
-            ref_seq,
-            f"read {record.query_name} at {contig}:{placement.pos0 + 1}",
-        )
+        if not placement.exact:
+            raise DataInvariantError(
+                f"internal invariant violated: non-exact placement change for "
+                f"read {record.query_name!r}"
+            )
         record.reference_start = placement.pos0
-        record.set_tag("MD", md, value_type="Z")
-        record.set_tag("NM", nm, value_type="i")
+        record.set_tag("MD", str(placement.ref_span), value_type="Z")
+        record.set_tag("NM", 0, value_type="i")
         for tag in STALE_TAGS_REMOVED:
             if record.has_tag(tag):
                 record.remove_tag(tag)
@@ -530,9 +539,10 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
 
                 disag_tmp = Path(str(cfg.disagreement_parquet) + f".pairloom-tmp-{os.getpid()}")
                 stats_tmp = Path(str(cfg.read_stats_parquet) + f".pairloom-tmp-{os.getpid()}")
+                # Register temps before writing so failures clean them up.
+                tmp_files.extend([disag_tmp, stats_tmp])
                 aggregator.finalize(disag_tmp, ref_names)
                 write_read_stats_parquet(stats_tmp, stats.counts(), cfg.parquet_compression)
-                tmp_files.extend([disag_tmp, stats_tmp])
 
                 # Optional coordinate sort (in place on the temp files).
                 if cfg.sort_output:
@@ -663,9 +673,7 @@ def _drain_one(pending: deque, handle: Any) -> None:
         handle(result)
 
 
-def _rollback(
-    writers: dict[str, _BamWriter], tmp_files: list[Path], published: list[Path]
-) -> None:
+def _rollback(writers: dict[str, _BamWriter], tmp_files: list[Path], published: list[Path]) -> None:
     """Best-effort cleanup: remove temps and any already-published outputs."""
     for writer in writers.values():
         writer.cleanup()
@@ -675,9 +683,7 @@ def _rollback(
         path.unlink(missing_ok=True)
 
 
-def _output_header(
-    header_dict: dict, cfg: PairLoomConfig, sort_output: bool
-) -> dict:
+def _output_header(header_dict: dict, cfg: PairLoomConfig, sort_output: bool) -> dict:
     """Copy the input header, set SO, and append a @PG record."""
     out = dict(header_dict)
     hd = dict(out.get("HD") or {})
@@ -696,8 +702,7 @@ def _output_header(
             "PN": "pairmerge",
             "VN": __version__,
             "CL": (
-                f"pairmerge mode={cfg.mode} input={cfg.input_path} "
-                f"reference={cfg.reference_path}"
+                f"pairmerge mode={cfg.mode} input={cfg.input_path} reference={cfg.reference_path}"
             ),
         }
     )

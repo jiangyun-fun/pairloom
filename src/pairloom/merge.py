@@ -142,17 +142,22 @@ def try_merge(
             emit(CIGAR_I, len(ins[0]), ins[0], ins[1])
         in1 = struct1.bases.get(rpos)
         in2 = struct2.bases.get(rpos)
-        resolved = _consensus_base(in1, in2, cfg)
-        if resolved is STRICT:
-            return MergeFailure(REASON_STRICT)
-        if resolved is None:
-            # Neither mate aligns a base here. A deletion observed by either
-            # mate is authoritative (a covering mate would have contributed a
-            # base, so a truly conflicting indel never reaches this branch).
-            if rpos in struct1.deleted or rpos in struct2.deleted:
+        d1 = rpos in struct1.deleted
+        d2 = rpos in struct2.deleted
+        if in1 is None and in2 is None:
+            # Neither mate aligns a base: a deletion observed by either mate
+            # spans this position (the other mate cannot contradict it here).
+            if d1 or d2:
                 emit(CIGAR_D, 1, "", [])
                 continue
             return MergeFailure(REASON_GAP)
+        if (in1 is not None and d2) or (in2 is not None and d1):
+            # One mate aligns a base where the other deletes it: the indel
+            # interpretations are irreconcilably inconsistent.
+            return MergeFailure(REASON_INDEL)
+        resolved = _consensus_base(in1, in2, cfg)
+        if resolved is STRICT:
+            return MergeFailure(REASON_STRICT)
         base, qual = resolved
         emit(CIGAR_M, 1, base, [qual])
 
@@ -235,9 +240,7 @@ def _merge_insertion(
             quals = tuple(max(a, b) for a, b in zip(ins1[1], ins2[1], strict=True))
             return ins1[0], quals
         return MergeFailure(REASON_INSERTION)
-    owner, other, ins = (
-        (struct1, struct2, ins1) if ins1 is not None else (struct2, struct1, ins2)
-    )
+    owner, other, ins = (struct1, struct2, ins1) if ins1 is not None else (struct2, struct1, ins2)
     if covers(other, boundary) and other.start0 < boundary < other.end0:
         return MergeFailure(REASON_INSERTION)
     return ins

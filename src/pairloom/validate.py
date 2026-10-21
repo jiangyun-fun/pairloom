@@ -62,9 +62,7 @@ def _check_output_path(path: Path, role: str, force: bool) -> None:
             f"output directory for {role} is not writable: {parent} ({exc})"
         ) from exc
     if path.exists() and not force:
-        raise ConfigurationError(
-            f"{role} output already exists: {path}. Use --force to overwrite."
-        )
+        raise ConfigurationError(f"{role} output already exists: {path}. Use --force to overwrite.")
 
 
 def _check_distinct_outputs(cfg: PairLoomConfig, outputs: dict[str, Path]) -> None:
@@ -83,19 +81,13 @@ def _check_distinct_outputs(cfg: PairLoomConfig, outputs: dict[str, Path]) -> No
         for src in existing:
             src_norm = os.path.normpath(os.path.abspath(src))
             if norm == src_norm:
-                raise ConfigurationError(
-                    f"{role} output {path} would overwrite input {src}"
-                )
+                raise ConfigurationError(f"{role} output {path} would overwrite input {src}")
     # samefile() also catches hardlinks and symlinks among existing paths.
     all_paths = list(outputs.values())
     for i, a in enumerate(all_paths):
         for b in all_paths[i + 1 :]:
             if a.exists() and b.exists() and os.path.samefile(a, b):
-                raise ConfigurationError(
-                    f"output paths {a} and {b} refer to the same file"
-                )
+                raise ConfigurationError(f"output paths {a} and {b} refer to the same file")
         for src in existing:
             if a.exists() and os.path.samefile(a, src):
-                raise ConfigurationError(
-                    f"output path {a} refers to input file {src}"
-                )
+                raise ConfigurationError(f"output path {a} refers to input file {src}")

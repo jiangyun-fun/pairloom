@@ -62,8 +62,7 @@ class ReferenceCache:
         contig_len = self.length(name)
         if start0 < 0 or end0 > contig_len or start0 > end0:
             raise DataInvariantError(
-                f"reference fetch [{start0}, {end0}) out of bounds for {name} "
-                f"(length {contig_len})"
+                f"reference fetch [{start0}, {end0}) out of bounds for {name} (length {contig_len})"
             )
         if end0 == start0:
             return ""

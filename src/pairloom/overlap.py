@@ -66,10 +66,6 @@ def analyze_overlap(
             continue
         ref_base = ref_seq[rpos - ref_offset]
         disagrees = base1 != base2
-        obs.append(
-            OverlapObservation(tid, rpos, ref_base, base1, struct1.is_reverse, disagrees)
-        )
-        obs.append(
-            OverlapObservation(tid, rpos, ref_base, base2, struct2.is_reverse, disagrees)
-        )
+        obs.append(OverlapObservation(tid, rpos, ref_base, base1, struct1.is_reverse, disagrees))
+        obs.append(OverlapObservation(tid, rpos, ref_base, base2, struct2.is_reverse, disagrees))
     return OverlapResult(tuple(obs), overlap_len)

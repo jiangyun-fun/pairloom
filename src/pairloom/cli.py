@@ -50,9 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--adjusted-bam", help="adjusted unmerged BAM (mode adjust)")
     out.add_argument("--merged-bam", help="consensus reads BAM (mode merge)")
     out.add_argument("--unmerged-bam", help="unmergeable pairs BAM (mode merge)")
-    out.add_argument(
-        "--disagreement-parquet", required=True, help="overlap disagreement table"
-    )
+    out.add_argument("--disagreement-parquet", required=True, help="overlap disagreement table")
     out.add_argument("--read-stats-parquet", required=True, help="classification counts table")
 
     pair = parser.add_argument_group("pair optimization")
@@ -158,6 +156,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="in-memory disagreement positions before spilling (default 1e6)",
     )
     io_grp.add_argument(
+        "--chunk-size",
+        type=int,
+        default=256,
+        help="templates per work unit in parallel runs (default 256)",
+    )
+    io_grp.add_argument(
         "--sort-output",
         action="store_true",
         help="coordinate-sort BAM outputs (default: template order)",
@@ -167,9 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="index BAM outputs (implies --sort-output)",
     )
-    io_grp.add_argument(
-        "--force", action="store_true", help="overwrite existing output files"
-    )
+    io_grp.add_argument("--force", action="store_true", help="overwrite existing output files")
     io_grp.add_argument("--debug", action="store_true", help="full tracebacks on error")
     return parser
 
@@ -215,6 +217,7 @@ def build_config(args: argparse.Namespace) -> PairLoomConfig:
         force=args.force,
         debug=args.debug,
         max_aggregation_records=args.max_aggregation_records,
+        chunk_size=args.chunk_size,
     )
 
 

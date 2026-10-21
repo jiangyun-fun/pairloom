@@ -24,7 +24,6 @@ from pairloom.cigarops import (
     CIGAR_S,
     QUERY_OPS,
     cigar_ref_len,
-    reverse_cigar,
     validate_cigar,
 )
 from pairloom.exceptions import DataInvariantError
@@ -190,10 +189,12 @@ class ReadStructure:
 def build_read_structure(record: object) -> ReadStructure:
     """Build the reference-orientation structure of a mapped pysam record.
 
-    For reverse-strand reads the stored sequence is the reverse complement of
-    the reference strand, so we reverse-complement the sequence, reverse the
-    quality array, and reverse the CIGAR op order; afterwards every value is
-    expressed in reference orientation for both strands.
+    In SAM/BAM, POS, CIGAR, SEQ, and QUAL are always stored in reference
+    orientation: for reverse-strand alignments the stored SEQ is already the
+    reverse complement of the original read and its base 0 aligns to the
+    leftmost reference position. A plain CIGAR walk therefore yields
+    reference-orientation values for both strands; ``is_reverse`` is recorded
+    for strand statistics and library-orientation checks only.
     """
     seq = record.query_sequence
     if seq is None:
@@ -209,11 +210,6 @@ def build_read_structure(record: object) -> ReadStructure:
     validate_cigar(cigar, len(seq), context)
 
     is_reverse = record.is_reverse
-    if is_reverse:
-        seq = revcomp(seq, context)
-        qual_list.reverse()
-        cigar = reverse_cigar(cigar)
-
     start0 = record.reference_start
     bases: dict[int, tuple[str, int]] = {}
     deleted: set[int] = set()

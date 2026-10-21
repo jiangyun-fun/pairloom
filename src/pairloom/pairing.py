@@ -5,15 +5,18 @@ Candidate pairs are evaluated against the documented preference hierarchy:
 1. both mates on the same reference (candidates always are; cross-contig
    pairs therefore have no valid combination and keep their BAM placements);
 2. library orientation and fragment-length plausibility;
-3. best combined alignment score (within ``--alignment-score-tolerance``
-   near-equivalents survive);
-4. largest aligned reference overlap;
+3. best combined alignment score: candidate pairs scoring below
+   ``best - --alignment-score-tolerance`` are discarded as clearly inferior;
+4. largest aligned reference overlap (the tolerance defines which pairs
+   count as near-equivalent, so overlap never overrides clearly superior
+   evidence);
 5. deterministic tie-breaks: leftmost fragment start, rightmost fragment
    end, then R1/R2 start coordinates.
 
-``pair-aware`` (default) ranks score above overlap; ``max-overlap`` ranks
-overlap first among pairs inside the score tolerance. Both strategies are
-deterministic.
+``pair-aware`` (default) applies the score-tolerance filter first and then
+prefers overlap inside the surviving set. ``max-overlap`` skips the filter:
+among all constraint-satisfying pairs it prefers overlap first, which is
+more aggressive about maximizing overlap. Both strategies are deterministic.
 """
 
 from __future__ import annotations
@@ -97,11 +100,15 @@ def select_pair(
     best_score = max(entry[2] for entry in valid)
     tol = cfg.alignment_score_tolerance
     near = [entry for entry in valid if entry[2] >= best_score - tol]
-    if cfg.pair_strategy == "pair-aware":
-        key = lambda e: (-e[2], -e[3], e[4], -e[5], e[0].pos0, e[1].pos0)  # noqa: E731
-    else:  # max-overlap
-        key = lambda e: (-e[3], -e[2], e[4], -e[5], e[0].pos0, e[1].pos0)  # noqa: E731
-    chosen = min(near, key=key)
+    # Both strategies rank overlap first, then residual score, then the
+    # documented coordinate tie-breaks; they differ only in the candidate
+    # pool (score-tolerance filtered vs. all constraint-satisfying pairs).
+    pool = near if cfg.pair_strategy == "pair-aware" else valid
+
+    def key(e: tuple[Placement, Placement, int, int, int, int]) -> tuple:
+        return (-e[3], -e[2], e[4], -e[5], e[0].pos0, e[1].pos0)
+
+    chosen = min(pool, key=key)
     n_equiv1 = len({e[0].pos0 for e in near})
     n_equiv2 = len({e[1].pos0 for e in near})
     return PairChoice(

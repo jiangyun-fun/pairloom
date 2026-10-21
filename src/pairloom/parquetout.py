@@ -51,17 +51,23 @@ READ_STATS_SCHEMA = pa.schema(
     ]
 )
 
+# Row layout: one "position row" per (tid, rpos) with alt == "" carrying the
+# position-level dp/has_disg/ref base, plus one "alt row" per alternative
+# allele with per-strand counts.
 _SPILL_SCHEMA = pa.schema(
     [
         pa.field("tid", pa.int32()),
         pa.field("rpos", pa.int64()),
         pa.field("alt", pa.string()),
+        pa.field("ref", pa.string()),
         pa.field("dp", pa.int64()),
         pa.field("has_disg", pa.bool_()),
         pa.field("adf", pa.int64()),
         pa.field("adr", pa.int64()),
     ]
 )
+
+SpillRow = tuple[int, int, str, str, int, bool, int, int]
 
 SUPPORTED_COMPRESSIONS = PARQUET_COMPRESSIONS
 
@@ -133,15 +139,13 @@ class DisagreementAggregator:
         self._spill_paths.append(path)
         self._entries = {}
 
-    def _entry_rows(
-        self, items: list[tuple[tuple[int, int], _Entry]]
-    ) -> list[tuple[int, int, str, int, bool, int, int]]:
-        rows: list[tuple[int, int, str, int, bool, int, int]] = []
+    def _entry_rows(self, items: list[tuple[tuple[int, int], _Entry]]) -> list[SpillRow]:
+        rows: list[SpillRow] = []
         for (tid, rpos), entry in items:
-            rows.append((tid, rpos, "", entry.dp, entry.has_disg, 0, 0))
+            rows.append((tid, rpos, "", entry.ref_base, entry.dp, entry.has_disg, 0, 0))
             for alt in sorted(entry.alts):
                 adf, adr = entry.alts[alt]
-                rows.append((tid, rpos, alt, 0, False, adf, adr))
+                rows.append((tid, rpos, alt, "", 0, False, adf, adr))
         return rows
 
     def finalize(self, out_path: Path, ref_names: list[str]) -> int:
@@ -150,9 +154,7 @@ class DisagreementAggregator:
         Returns the number of reported positions. Positions without mate
         disagreement never appear.
         """
-        streams: list[list[tuple[int, int, str, int, bool, int, int]]] = [
-            self._entry_rows(sorted(self._entries.items()))
-        ]
+        streams: list[list[SpillRow]] = [self._entry_rows(sorted(self._entries.items()))]
         self._entries = {}
         readers: list[pq.ParquetFile] = []
         try:
@@ -175,36 +177,25 @@ class DisagreementAggregator:
         return reported
 
 
-def _spill_stream(
-    pf: pq.ParquetFile, batch_size: int
-) -> list[tuple[int, int, str, int, bool, int, int]]:
-    rows: list[tuple[int, int, str, int, bool, int, int]] = []
+def _spill_stream(pf: pq.ParquetFile, batch_size: int) -> list[SpillRow]:
+    rows: list[SpillRow] = []
     for batch in pf.iter_batches(batch_size=batch_size):
-        tids = batch.column(0).to_pylist()
-        rposs = batch.column(1).to_pylist()
-        alts = batch.column(2).to_pylist()
-        dps = batch.column(3).to_pylist()
-        flags = batch.column(4).to_pylist()
-        adfs = batch.column(5).to_pylist()
-        adrs = batch.column(6).to_pylist()
-        rows.extend(zip(tids, rposs, alts, dps, flags, adfs, adrs, strict=True))
+        cols = [batch.column(i).to_pylist() for i in range(8)]
+        rows.extend(zip(*cols, strict=True))
     return rows
 
 
-def _write_spill(
-    path: str,
-    rows: list[tuple[int, int, str, int, bool, int, int]],
-    compression: str,
-) -> None:
+def _write_spill(path: str, rows: list[SpillRow], compression: str) -> None:
     table = pa.Table.from_arrays(
         [
             pa.array([r[0] for r in rows], type=pa.int32()),
             pa.array([r[1] for r in rows], type=pa.int64()),
             pa.array([r[2] for r in rows], type=pa.string()),
-            pa.array([r[3] for r in rows], type=pa.int64()),
-            pa.array([r[4] for r in rows], type=pa.bool_()),
-            pa.array([r[5] for r in rows], type=pa.int64()),
+            pa.array([r[3] for r in rows], type=pa.string()),
+            pa.array([r[4] for r in rows], type=pa.int64()),
+            pa.array([r[5] for r in rows], type=pa.bool_()),
             pa.array([r[6] for r in rows], type=pa.int64()),
+            pa.array([r[7] for r in rows], type=pa.int64()),
         ],
         schema=_SPILL_SCHEMA,
     )
@@ -257,7 +248,7 @@ def _write_final_table(
             if len(batch_cols["pos"]) >= batch_size:
                 writer.write_table(_batch_to_table(batch_cols))
 
-        for tid, rpos, alt, row_dp, row_flag, adf, adr in merged_rows:
+        for tid, rpos, alt, row_ref, row_dp, row_flag, adf, adr in merged_rows:
             pos_key = (tid, rpos)
             if pos_key != current_pos:
                 flush_position()
@@ -269,6 +260,7 @@ def _write_final_table(
             if alt == "":
                 dp += row_dp
                 has_disg = has_disg or row_flag
+                ref_base = row_ref
             else:
                 counts = alts.setdefault(alt, [0, 0])
                 counts[0] += adf
@@ -286,10 +278,7 @@ def _write_final_table(
 
 def _batch_to_table(cols: dict[str, list]) -> pa.Table:
     table = pa.Table.from_arrays(
-        [
-            pa.array(cols[f.name], type=f.type)
-            for f in DISAGREEMENT_SCHEMA
-        ],
+        [pa.array(cols[f.name], type=f.type) for f in DISAGREEMENT_SCHEMA],
         schema=DISAGREEMENT_SCHEMA,
     )
     for name in cols:
