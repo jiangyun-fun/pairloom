@@ -1,0 +1,321 @@
+"""Parquet statistical output with explicit schemas and bounded memory.
+
+Schemas (column names, order, and types are stable API):
+
+Disagreement table (``--disagreement-parquet``)::
+
+    seq_name string, pos int64 (1-based), ref string, alt string,
+    dp int64, adf int64, adr int64, af float64
+
+Read-stats table (``--read-stats-parquet``)::
+
+    type string, count int64
+
+The disagreement aggregator keeps at most ``max_aggregation_records``
+positions in memory; beyond that, sorted partial aggregates spill to Parquet
+files that are k-way merged at finalize time. All counts are integers, so
+results are deterministic regardless of worker scheduling.
+"""
+
+from __future__ import annotations
+
+import heapq
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from pairloom.classify import CLASSIFICATION_ORDER
+from pairloom.config import PARQUET_COMPRESSIONS, PairLoomConfig
+from pairloom.exceptions import DataInvariantError, OutputError
+
+DISAGREEMENT_SCHEMA = pa.schema(
+    [
+        pa.field("seq_name", pa.string()),
+        pa.field("pos", pa.int64()),
+        pa.field("ref", pa.string()),
+        pa.field("alt", pa.string()),
+        pa.field("dp", pa.int64()),
+        pa.field("adf", pa.int64()),
+        pa.field("adr", pa.int64()),
+        pa.field("af", pa.float64()),
+    ]
+)
+
+READ_STATS_SCHEMA = pa.schema(
+    [
+        pa.field("type", pa.string()),
+        pa.field("count", pa.int64()),
+    ]
+)
+
+_SPILL_SCHEMA = pa.schema(
+    [
+        pa.field("tid", pa.int32()),
+        pa.field("rpos", pa.int64()),
+        pa.field("alt", pa.string()),
+        pa.field("dp", pa.int64()),
+        pa.field("has_disg", pa.bool_()),
+        pa.field("adf", pa.int64()),
+        pa.field("adr", pa.int64()),
+    ]
+)
+
+SUPPORTED_COMPRESSIONS = PARQUET_COMPRESSIONS
+
+
+@dataclass(slots=True)
+class _Entry:
+    ref_base: str
+    dp: int = 0
+    has_disg: bool = False
+    alts: dict[str, list[int]] = field(default_factory=dict)
+
+
+class DisagreementAggregator:
+    """Memory-bounded aggregation of overlapping-base observations.
+
+    Observation unit: one eligible read base from a mate whose partner also
+    has an eligible aligned base at the same reference position.
+    """
+
+    def __init__(self, cfg: PairLoomConfig) -> None:
+        self.cfg = cfg
+        self._entries: dict[tuple[int, int], _Entry] = {}
+        self._spill_paths: list[str] = []
+        self._spill_dir: str | None = None
+        self._spill_seq = 0
+        self.reported_positions = 0
+
+    def set_spill_dir(self, path: str) -> None:
+        self._spill_dir = path
+
+    def add_observation(
+        self,
+        tid: int,
+        rpos0: int,
+        ref_base: str,
+        base: str,
+        strand_reverse: bool,
+        pair_disagrees: bool,
+    ) -> None:
+        key = (tid, rpos0)
+        entry = self._entries.get(key)
+        if entry is None:
+            if len(self._entries) >= self.cfg.max_aggregation_records:
+                self.spill()
+            entry = _Entry(ref_base)
+            self._entries[key] = entry
+        elif entry.ref_base != ref_base:  # pragma: no cover - guards a real bug
+            raise DataInvariantError(
+                f"inconsistent reference base at tid {tid} pos {rpos0 + 1}: "
+                f"{entry.ref_base!r} vs {ref_base!r}"
+            )
+        entry.dp += 1
+        if base != ref_base:
+            counts = entry.alts.setdefault(base, [0, 0])
+            counts[1 if strand_reverse else 0] += 1
+        if pair_disagrees:
+            entry.has_disg = True
+
+    def spill(self) -> None:
+        """Flush in-memory entries to a sorted spill file."""
+        if not self._entries:
+            return
+        if self._spill_dir is None:  # pragma: no cover - pipeline always sets it
+            raise OutputError("disagreement spill directory not configured")
+        self._spill_seq += 1
+        path = os.path.join(self._spill_dir, f"disag_spill_{self._spill_seq:06d}.parquet")
+        rows = self._entry_rows(sorted(self._entries.items()))
+        _write_spill(path, rows, self.cfg.parquet_compression)
+        self._spill_paths.append(path)
+        self._entries = {}
+
+    def _entry_rows(
+        self, items: list[tuple[tuple[int, int], _Entry]]
+    ) -> list[tuple[int, int, str, int, bool, int, int]]:
+        rows: list[tuple[int, int, str, int, bool, int, int]] = []
+        for (tid, rpos), entry in items:
+            rows.append((tid, rpos, "", entry.dp, entry.has_disg, 0, 0))
+            for alt in sorted(entry.alts):
+                adf, adr = entry.alts[alt]
+                rows.append((tid, rpos, alt, 0, False, adf, adr))
+        return rows
+
+    def finalize(self, out_path: Path, ref_names: list[str]) -> int:
+        """Merge spills and memory, write the final Parquet table.
+
+        Returns the number of reported positions. Positions without mate
+        disagreement never appear.
+        """
+        streams: list[list[tuple[int, int, str, int, bool, int, int]]] = [
+            self._entry_rows(sorted(self._entries.items()))
+        ]
+        self._entries = {}
+        readers: list[pq.ParquetFile] = []
+        try:
+            for spill in self._spill_paths:
+                pf = pq.ParquetFile(spill)
+                readers.append(pf)
+                streams.append(_spill_stream(pf, self.cfg.parquet_batch_size))
+            merged = heapq.merge(*streams, key=lambda r: (r[0], r[1], r[2]))
+            reported = _write_final_table(
+                out_path,
+                merged,
+                ref_names,
+                self.cfg.parquet_compression,
+                self.cfg.parquet_batch_size,
+            )
+        finally:
+            for pf in readers:
+                pf.close()
+        self.reported_positions = reported
+        return reported
+
+
+def _spill_stream(
+    pf: pq.ParquetFile, batch_size: int
+) -> list[tuple[int, int, str, int, bool, int, int]]:
+    rows: list[tuple[int, int, str, int, bool, int, int]] = []
+    for batch in pf.iter_batches(batch_size=batch_size):
+        tids = batch.column(0).to_pylist()
+        rposs = batch.column(1).to_pylist()
+        alts = batch.column(2).to_pylist()
+        dps = batch.column(3).to_pylist()
+        flags = batch.column(4).to_pylist()
+        adfs = batch.column(5).to_pylist()
+        adrs = batch.column(6).to_pylist()
+        rows.extend(zip(tids, rposs, alts, dps, flags, adfs, adrs, strict=True))
+    return rows
+
+
+def _write_spill(
+    path: str,
+    rows: list[tuple[int, int, str, int, bool, int, int]],
+    compression: str,
+) -> None:
+    table = pa.Table.from_arrays(
+        [
+            pa.array([r[0] for r in rows], type=pa.int32()),
+            pa.array([r[1] for r in rows], type=pa.int64()),
+            pa.array([r[2] for r in rows], type=pa.string()),
+            pa.array([r[3] for r in rows], type=pa.int64()),
+            pa.array([r[4] for r in rows], type=pa.bool_()),
+            pa.array([r[5] for r in rows], type=pa.int64()),
+            pa.array([r[6] for r in rows], type=pa.int64()),
+        ],
+        schema=_SPILL_SCHEMA,
+    )
+    try:
+        pq.write_table(table, path, compression=None)
+    except OSError as exc:
+        raise OutputError(f"cannot write disagreement spill {path}: {exc}") from exc
+
+
+def _write_final_table(
+    out_path: Path,
+    merged_rows,
+    ref_names: list[str],
+    compression: str,
+    batch_size: int,
+) -> int:
+    """Consume the sorted merged row stream and write the final table."""
+    batch_cols: dict[str, list] = {f.name: [] for f in DISAGREEMENT_SCHEMA}
+    reported = 0
+    writer = None
+    try:
+        writer = pq.ParquetWriter(
+            str(out_path), DISAGREEMENT_SCHEMA, compression=_codec(compression)
+        )
+        current_pos: tuple[int, int] | None = None
+        dp = 0
+        has_disg = False
+        alts: dict[str, list[int]] = {}
+        ref_base = ""
+
+        def flush_position() -> None:
+            nonlocal reported
+            if current_pos is None:
+                return
+            if not has_disg or not alts:
+                return
+            reported += 1
+            tid, rpos = current_pos
+            seq_name = ref_names[tid]
+            for alt in sorted(alts):
+                adf, adr = alts[alt]
+                batch_cols["seq_name"].append(seq_name)
+                batch_cols["pos"].append(rpos + 1)
+                batch_cols["ref"].append(ref_base)
+                batch_cols["alt"].append(alt)
+                batch_cols["dp"].append(dp)
+                batch_cols["adf"].append(adf)
+                batch_cols["adr"].append(adr)
+                batch_cols["af"].append((adf + adr) / dp if dp else 0.0)
+            if len(batch_cols["pos"]) >= batch_size:
+                writer.write_table(_batch_to_table(batch_cols))
+
+        for tid, rpos, alt, row_dp, row_flag, adf, adr in merged_rows:
+            pos_key = (tid, rpos)
+            if pos_key != current_pos:
+                flush_position()
+                current_pos = pos_key
+                dp = 0
+                has_disg = False
+                alts = {}
+                ref_base = ""
+            if alt == "":
+                dp += row_dp
+                has_disg = has_disg or row_flag
+            else:
+                counts = alts.setdefault(alt, [0, 0])
+                counts[0] += adf
+                counts[1] += adr
+        flush_position()
+        if batch_cols["pos"]:
+            writer.write_table(_batch_to_table(batch_cols))
+    except OSError as exc:
+        raise OutputError(f"cannot write disagreement Parquet {out_path}: {exc}") from exc
+    finally:
+        if writer is not None:
+            writer.close()
+    return reported
+
+
+def _batch_to_table(cols: dict[str, list]) -> pa.Table:
+    table = pa.Table.from_arrays(
+        [
+            pa.array(cols[f.name], type=f.type)
+            for f in DISAGREEMENT_SCHEMA
+        ],
+        schema=DISAGREEMENT_SCHEMA,
+    )
+    for name in cols:
+        cols[name].clear()
+    return table
+
+
+def _codec(compression: str) -> str | None:
+    return None if compression == "none" else compression
+
+
+def write_read_stats_parquet(
+    out_path: Path,
+    counts: dict[str, int],
+    compression: str,
+) -> None:
+    """Write the six classification counts as a deterministic table."""
+    ordered = [(name, int(counts[name])) for name in CLASSIFICATION_ORDER]
+    table = pa.Table.from_arrays(
+        [
+            pa.array([name for name, _ in ordered], type=pa.string()),
+            pa.array([count for _, count in ordered], type=pa.int64()),
+        ],
+        schema=READ_STATS_SCHEMA,
+    )
+    try:
+        pq.write_table(table, str(out_path), compression=_codec(compression))
+    except OSError as exc:
+        raise OutputError(f"cannot write read-stats Parquet {out_path}: {exc}") from exc

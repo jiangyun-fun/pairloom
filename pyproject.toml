@@ -34,6 +34,7 @@ Homepage = "https://github.com/jiangyunacw/pairloom"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pairloom"]
+dev-mode-dirs = ["src"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/pairloom", "tests", "README.md", "pixi.toml"]
