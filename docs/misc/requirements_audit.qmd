@@ -38,3 +38,69 @@ Packages: `pysam>=0.24.1, pyarrow>=25, numpy>=2.5, python>=3.12,<3.14 -> pixi:de
 Environments: none created beyond the workspace `default` environment.
 
 Git: 5 conventional commits on `main` (scaffold, core pipeline, tests, benchmark+README, synthetic dataset).
+
+## Evaluate third-party review findings before fixing
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+Assess six third-party code-review findings (two MAPQ overstatement bugs, spill-merge memory bound, trailing-clip selection, orphan mate coordinates, index overwrite validation) against the actual code with independent reproductions, then propose an agreement position and wait for user confirmation before implementing.
+
+### result
+
+1. Answered: all six findings independently verified by code reading and end-to-end reproductions; none refuted.
+2. Answered: both MAPQ bugs confirmed — merged consensus carries 60 on the repeat pair (committed expected outputs encode it); `--max-pair-evaluations 1` yields 60 at an ambiguous placement.
+3. Answered: spill finalize measured at 8.7 MB peak for 60k positions with a 1000-entry bound (linear in dataset size, violates the documented memory guarantee).
+4. Answered: contained-mate merge emits 40M2S instead of 40M3S; orphan unmapped mate keeps stale RNEXT 416 after movement to 400; existing `.bai` overwritten without `--force`.
+5. Answered: one extra item found — `single_read_ambiguity` in `src/pairloom/pairing.py` is dead code with no callers.
+
+### change
+
+Files:
+- Updated: `docs/misc/next_and_recommendation.qmd` (added the pending fix-batch item), `docs/misc/requirements_audit.qmd` (this entry).
+
+Packages: None.
+
+Environments: none.
+
+Git: none (working tree changes only; reproduction scripts stayed in /tmp).
+
+## Apply the six confirmed review fixes
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+After the user confirmed the evaluation verdict, implement all six verified fixes (consensus MAPQ policy, bounded spill finalize, pair-evaluation truncation flag, trailing-clip ownership, orphan RNEXT, index validation) plus the dead-code cleanup, with regression tests, regenerated synthetic expected outputs, and documentation in sync.
+
+### result
+
+1. Implemented consensus MAPQ = min(adjusted mate MAPQs); eligibility unchanged on original aligner MAPQ (try_merge merged_mapq parameter).
+2. Implemented lazy spill streams with bounded merge fan-in (cascading re-spills at 16) and batched spill writing; finalize memory now configuration-bounded.
+3. Implemented pair-evaluation truncation propagation into PairChoice.truncated; capped searches now yield min(orig, 10), never 60.
+4. Implemented trailing-clip ownership by largest aligned end; contained mates keep the container's outer clip (40M3S case).
+5. Implemented unmapped-mate RNEXT/PNEXT refresh after mapped-mate movement.
+6. Implemented `<bam>.bai` index destinations in preflight validation (existence requires --force; collisions rejected).
+7. Refactored: removed dead `single_read_ambiguity`; regenerated synthetic expected outputs; updated README and EXPECTED.md; re-measured benchmark (no regression).
+
+### change
+
+Files:
+- Updated: `src/pairloom/{merge,pipeline,parquetout,pairing,validate}.py`
+- Updated: `tests/{test_pairing,test_candidates_mapq,test_merge,test_classify_policy,test_cli,test_integration}.py` (+10 tests, 130 total)
+- Updated: `data/synthetic/{expected_merged.bam,expected_unmerged.bam,EXPECTED.md}`, `README.md`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-131446_review-fixes.plan.qmd`, `docs/plans/20261021-131956_review-fixes.report.qmd`
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+
+Packages: none.
+
+Environments: none.
+
+Git: 2 conventional commits on `main` (fix: code/tests/data/docs; docs: plan-report pair and audit), not pushed.

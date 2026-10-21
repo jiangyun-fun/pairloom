@@ -1,0 +1,105 @@
+---
+title: "Review-fixes implementation plan (as executed)"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+# Objective
+
+Apply the six verified third-party review findings as one fix batch, plus
+the dead-code cleanup found during verification, keeping all tests green
+and the documented policies (README, synthetic EXPECTED.md) in sync.
+
+# Verified findings (all reproduced before fixing)
+
+1. Merged consensus records carried `min(original aligner MAPQ)` instead of
+   the conservative adjusted values (repeat pair: adjust 3/3, merge 60).
+2. Disagreement spill finalization materialized every spilled row in
+   Python lists: 8.7 MB peak measured with a 1000-entry bound; O(total
+   rows).
+3. `--max-pair-evaluations` exhaustion was not propagated into
+   `PairChoice.truncated`, so a truncated search could yield a false
+   MAPQ 60.
+4. The trailing outer clip was owned by the later-START mate; a contained
+   mate (later start, earlier end) yielded 40M2S instead of 40M3S.
+5. `_adjust_single` moved the unmapped mate's POS but left its RNEXT/PNEXT
+   at the pre-adjustment position (416 after a move to 400).
+6. Derived `.bai` destinations bypassed `validate_paths`: an existing index
+   was overwritten without `--force`; index paths could collide with
+   declared outputs.
+
+# Changes as executed
+
+- `src/pairloom/merge.py`: `try_merge` gained a `merged_mapq` parameter
+  (output MAPQ separated from the eligibility MAPQ on the structs); the
+  trailing-clip owner is now the mate with the largest aligned `end0`.
+- `src/pairloom/pipeline.py`: `_both_mapped` computes
+  `merged_mapq = min(adjusted)` and passes it to `try_merge`; structs keep
+  original MAPQs for eligibility only. `_adjust_single` also refreshes the
+  unmapped mate's `next_reference_id/start`.
+- `src/pairloom/parquetout.py`: `_spill_stream` is a generator over
+  `iter_batches`; new `_reduce_spills` cascades merges down to a bounded
+  fan-in (`_MERGE_FANIN = 16`); `_write_spill_rows` streams spill writes in
+  batches (intermediates stay uncompressed). This went one step beyond the
+  original plan: plain generators alone still scaled with spill count
+  because `heapq.merge` pulls one batch per spill.
+- `src/pairloom/pairing.py`: evaluation-budget exhaustion (including
+  ending exactly at the cap) OR-ed into `PairChoice.truncated`; dead
+  `single_read_ambiguity` removed.
+- `src/pairloom/validate.py`: with `--index-output`, derived `<bam>.bai`
+  paths join the distinctness and existence-requires-`--force` checks
+  under `index for <role>` roles.
+- Tests: 10 regressions added across test_pairing, test_candidates_mapq,
+  test_merge (clip + MAPQ policy), test_classify_policy, test_cli (index
+  validation), test_integration (bounded finalize memory).
+- `data/synthetic/expected_*` regenerated (pair_repeat merged MAPQ 60 → 3;
+  pair_half's unmapped mate RNEXT now follows the mapped locus);
+  EXPECTED.md and README updated (MAPQ table, merged-record MAPQ, clip
+  ownership, index validation, memory paragraph, test count).
+- Benchmark re-measured after the fixes; committed results updated.
+
+# Steps actually taken
+
+1. Plan written; all six findings re-verified by reading the code and by
+   the evaluation turn's reproduction script.
+2. Fixes 1, 4, 5 (merge/pipeline), then 3 + dead code (pairing), then 6
+   (validate); suite green (120) after each step.
+3. Spill fix strengthened from lazy generators to bounded fan-in after
+   analyzing the many-small-spills case; streaming spill writer added.
+4. Regression tests added; suite 130 passed.
+5. Reproduction script re-run: all six behaviors corrected at the same
+   call sites.
+6. Synthetic expected outputs regenerated and quickchecked; README and
+   EXPECTED.md updated; lint/format clean; benchmark re-run (no
+   regression).
+
+# Verification
+
+- `pixi run test`: 130 passed (was 120; +10 regressions).
+- Reproduction script after the fixes: merged MAPQ 3; capped budget 10;
+  contained mate 40M3S; orphan RNEXT follows movement; stale `.bai`
+  without `--force` exits 2; finalize peak 2.2 MB (was 8.7 MB).
+- `pixi run lint` / `pixi run format`: clean.
+- `samtools quickcheck` on regenerated expected outputs: pass.
+- Benchmark: 1 thread 7.6 s / 2,633 pairs/s / 224 MiB — unchanged from the
+  pre-fix measurement.
+
+# Risks encountered
+
+- Report validator initially rejected items missing `#### reason` sections
+  and the `process` item carrying one; fixed to the exact per-category
+  schema.
+- The regenerate step also changed `expected_unmerged.bam` (pair_half's
+  unmapped mate RNEXT) — a legitimate consequence of fix 5, documented in
+  the report's caveat category.

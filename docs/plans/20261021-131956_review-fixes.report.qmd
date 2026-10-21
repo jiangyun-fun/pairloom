@@ -1,0 +1,839 @@
+---
+title: "Review-fixes implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+None
+
+## fix
+
+### Consensus MAPQ overstated mapping confidence in repeats
+
+```
+level: high
+```
+
+#### reason
+
+The consensus record took its MAPQ from the ORIGINAL aligner values, so a
+repeat-ambiguous pair whose adjusted mates carry MAPQ 3 merged into a
+MAPQ-60 record. This violates the spec's core guarantee: never falsely
+assign 60 to exact matches in repeats.
+
+#### description
+
+```
+type: text
+```
+
+1. `try_merge` gained a `merged_mapq` parameter separating the output MAPQ
+   from the eligibility MAPQ on the structs.
+2. `_both_mapped` computes `merged_mapq = min(adjusted R1, adjusted R2)`
+   before restoring the original MAPQs onto the structs.
+3. Eligibility (`--min-mapq`) still gates on the original aligner MAPQ, per
+   the documented policy; only the output value changed.
+
+#### before
+
+Merged `pair_repeat` (tandem repeat, placement ambiguous) carried MAPQ 60
+while both adjusted mates carried 3. The committed
+`data/synthetic/expected_merged.bam` encoded the bug.
+
+#### after
+
+The consensus carries min(adjusted) = 3; unique unchanged pairs still
+merge at 60. Regenerated expected outputs and README now state the policy.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Reproduction before the fix, then after (same script):
+
+```
+before: merged pair_repeat flag=0 pos=400 mapq=60 cigar=16M
+after:  merged pair_repeat flag=0 pos=400 mapq=3  cigar=16M
+```
+
+Regenerated committed output (`samtools view data/synthetic/expected_merged.bam`):
+
+```
+pair_repeat  0  chr1  401  3  16M  ...  MD:Z:16  NM:i:0
+```
+
+Regression: `tests/test_merge.py::TestMergedMapqPolicy` (2 tests).
+Suite: 130 passed.
+:::
+
+### Pair-evaluation truncation could imply false uniqueness
+
+```
+level: high
+```
+
+#### reason
+
+Exhausting `--max-pair-evaluations` broke the search loops without setting
+`PairChoice.truncated`, so the MAPQ policy saw an untruncated, unambiguous
+search and assigned 60 at placements whose equivalents were never explored
+— the exact false-confidence class the policy exists to prevent.
+
+#### description
+
+```
+type: text
+```
+
+1. `select_pair` now computes `search_truncated = evaluated >=
+   cfg.max_pair_evaluations` and ORs it into `PairChoice.truncated`.
+2. Ending exactly at the cap also counts as truncated (conservative
+   direction).
+3. The existing `min(orig, 10)` rule then applies through the unchanged
+   `adjusted_mapq` policy.
+
+#### before
+
+`--max-pair-evaluations 1 --max-candidates-per-read 100` on the repeat
+pair yielded MAPQ 60/60 at an ambiguous placement (default budget: 3/3).
+
+#### after
+
+The same invocation yields MAPQ 10/10 (`min(orig, 10)`), never 60.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+default: pair_repeat pos=400 mapq=3
+capped:  pair_repeat pos=400 mapq=10   <-- after fix (was 60)
+```
+
+Regressions: `tests/test_pairing.py::TestSelectPair::test_eval_budget_truncation_flags_choice`,
+`test_discovery_truncation_propagates`;
+`tests/test_candidates_mapq.py::TestAmbiguousRepeatPair::test_capped_pair_search_caps_mapq`.
+:::
+
+### Disagreement finalize loaded every spilled row into memory
+
+```
+level: high
+```
+
+#### reason
+
+`_spill_stream` materialized each spill file as a Python list and
+`finalize` held one list per spill, so peak memory grew with the entire
+dataset (~145 bytes/row) — defeating the documented
+`--max-aggregation-records` bound and risking OOM on large inputs. Plain
+generators alone were insufficient: `heapq.merge` pulls one batch per
+spill, so many small spills would still scale with spill count.
+
+#### description
+
+```
+type: text
+```
+
+1. `_spill_stream` is a generator over `iter_batches` (one Parquet batch
+   resident per open stream).
+2. New `_reduce_spills` cascades merges until at most `_MERGE_FANIN = 16`
+   spill files remain, writing intermediates through a batched
+   `_write_spill_rows` (streaming writer; intermediates stay
+   uncompressed as before).
+3. Finalize memory is now a function of configuration (fan-in × batch
+   size) plus the in-memory buffer — never of dataset size.
+
+#### before
+
+60,000 positions with a 1000-entry threshold: finalize peaked at 8.7 MB,
+scaling linearly with total rows.
+
+#### after
+
+Same workload: 2.2 MB peak. 100,000-position regression asserts peak
+< 10 MB where the eager path measured ~15 MB.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+spills=59 positions=60000
+before: finalize peak=8.7 MB (max_aggregation_records=1000)
+after:  finalize peak=2.2 MB
+```
+
+Regressions: `tests/test_integration.py::TestBoundedMemory::test_spill_finalize_memory_stays_bounded`
+(tracemalloc bound + generator contract); existing spill-correctness tests
+(`test_spilling_aggregator_matches_direct_result`,
+`test_aggregator_unit_spill_merge`) still pass.
+:::
+
+### Contained mates produced the wrong trailing soft clip
+
+```
+level: medium
+```
+
+#### reason
+
+The trailing-clip owner was the mate with the later START. A contained
+mate starts later but ends earlier, so its internal clip was promoted to
+the fragment's outer edge while the container's outer clip was dropped —
+a spec §8 violation (outer soft clips preserved) that also corrupted the
+merged sequence. Medium: wrong sequence content, but limited to contained
+mates with clips.
+
+#### description
+
+```
+type: text
+```
+
+The trail-clip owner is now the mate with the largest aligned `end0`
+(`trail = struct1 if struct1.end0 >= struct2.end0 else struct2`); the lead
+owner stays the smallest `start0`. In a contained pair one read correctly
+owns both outer clips.
+
+#### before
+
+`40M3S` at 500 containing `10M2S` at 510 merged to `40M2S`, appending the
+contained mate's 2 internal clip bases.
+
+#### after
+
+The same pair merges to `40M3S` with the container's 3 outer clip bases.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+before: merged contained pos=500 cigar=40M2S
+after:  merged contained pos=500 cigar=40M3S
+        query_sequence == ref[500:540] + "NNN"
+```
+
+Regression: `tests/test_merge.py::TestOuterSoftClips::test_container_owns_trailing_outer_clip`.
+:::
+
+### Orphan adjustment left stale mate coordinates
+
+```
+level: medium
+```
+
+#### reason
+
+`_adjust_single` moved the unmapped mate's POS to the mapped mate's new
+locus but never refreshed its RNEXT/PNEXT, which kept pointing at the
+pre-adjustment position — inconsistent metadata for every downstream tool
+that reads mate fields. Medium: metadata-only corruption, placements and
+sequences were already correct.
+
+#### description
+
+```
+type: text
+```
+
+Two lines in `_adjust_single` now set the unmapped mate's
+`next_reference_id/start` to the mapped record's post-adjustment
+coordinates (SAM spec: an unmapped read's mate fields reference the mapped
+mate).
+
+#### before
+
+After the mapped mate slid 416 → 400: unmapped mate POS 400 but
+`rnext=0:416`.
+
+#### after
+
+Both records' RNEXT/PNEXT point at 400.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+out: orphan flag=65  pos=400 mapq=3  cigar=16M  rnext=0:400
+out: orphan flag=133 pos=400 mapq=0  cigar=None rnext=0:400  <-- was 0:416
+```
+
+Regression: `tests/test_classify_policy.py::TestRecordPolicy::test_unmapped_mate_rnext_follows_movement`.
+:::
+
+### Index outputs bypassed overwrite and collision validation
+
+```
+level: medium
+```
+
+#### reason
+
+Derived `.bai` destinations were absent from `validate_paths`, so an
+existing index was silently overwritten without `--force` (violating the
+fail-loud spec §9), and an index path equal to another declared output
+would clobber that output at publish time. Medium: requires `--index-output`
+and specific pre-existing files, but the collision case destroys an output.
+
+#### description
+
+```
+type: text
+```
+
+With `--index-output`, `validate_paths` now folds each derived
+`<bam>.bai` path into the output set under the role `index for <role>`;
+the existing distinctness and existence-requires-`--force` checks then
+cover them, mirroring exactly how the pipeline derives the destinations.
+
+#### before
+
+A stale `adj.bam.bai` was silently replaced (exit 0) without `--force`.
+
+#### after
+
+Exit 2 with `index for adjusted_bam output already exists ... Use --force
+to overwrite.`; collision cases (`--unmerged-bam m.bam.bai` under
+`--merged-bam m.bam`) are rejected before processing starts.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+second run (no --force; only a stale .bai exists) exit=2
+pairmerge: error: index for adjusted_bam output already exists:
+           /tmp/.../adj.bam.bai. Use --force to overwrite.
+```
+
+Regressions: `tests/test_cli.py::TestPathValidation::test_existing_index_without_force_refused`,
+`test_index_colliding_with_output_rejected`.
+:::
+
+## limitation
+
+### Finalize memory is bounded by configuration, not zero
+
+```
+level: low
+```
+
+#### reason
+
+Low: the bound is real and configuration-controlled; only its magnitude
+is the limitation.
+
+#### description
+
+```
+type: text
+```
+
+Spill finalize still holds fan-in (16) × one Parquet batch of rows plus
+the in-memory buffer. With default settings that is roughly one million
+rows of headroom — two configurable constants, independent of dataset
+size, but not a hard small cap.
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Measured 2.2 MB peak at 60k positions with a 1000-entry threshold
+(`/tmp` reproduction, tracemalloc); bound asserted in
+`tests/test_integration.py::TestBoundedMemory::test_spill_finalize_memory_stays_bounded`.
+:::
+
+## caveat
+
+### Intentional behavior changes for existing users
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: three user-visible behavior changes ship with this batch; users
+must know before upgrading.
+
+#### description
+
+```
+type: text
+```
+
+1. Merged consensus records of repeat-ambiguous pairs now carry the
+   conservative MAPQ (3 instead of 60 in the synthetic example); pipelines
+   filtering merged BAMs by MAPQ ≥ 30 will see fewer repeat reads pass.
+2. Runs that previously succeeded by silently overwriting stale `.bai`
+   files now exit 2; they need `--force` like every other output.
+3. `--max-pair-evaluations`-limited runs now cap MAPQ at 10 instead of
+   granting 60.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+All three changes are pinned by new regression tests (see the fix items);
+EXPECTED.md and the README MAPQ/merging sections state the new behavior.
+:::
+
+## assumption
+
+### tracemalloc measures the dominant allocation path
+
+```
+level: low
+```
+
+#### reason
+
+Low: a test-infrastructure assumption, stated so a future flake can be
+diagnosed quickly.
+
+#### description
+
+```
+type: text
+```
+
+The finalize memory regression asserts a tracemalloc peak, which tracks
+Python-side allocations (the row tuples and strings that dominated the
+eager path) but not native Arrow buffers. The 10 MB bound carries enough
+margin for machine variance; native-side regression is not covered.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## conclusion
+
+### All six verified review findings are fixed and regression-pinned
+
+```
+level: high
+```
+
+#### reason
+
+High: this is the batch's outcome statement, backed by the full gate run.
+
+#### description
+
+```
+type: text
+```
+
+1. All six fixes landed as one batch, each with a dedicated regression
+   test (10 new tests total); the suite grew from 120 to 130 passing.
+2. The evaluation turn's reproduction script, re-run unchanged, confirms
+   every fixed behavior at the exact call sites that demonstrated the bugs.
+3. Lint, format, `samtools quickcheck`, and the benchmark show no
+   regressions; committed synthetic expected outputs were regenerated to
+   encode the corrected MAPQ policy.
+4. The extra dead-code finding (`single_read_ambiguity`) was removed.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+pixi run test    -> 130 passed in ~4-7 s
+pixi run lint    -> All checks passed
+pixi run format  -> 29 files already formatted
+samtools quickcheck expected_merged.bam expected_unmerged.bam -> ok
+bench: 1 thread 7.6 s / 2,633 pairs/s / 224 MiB (unchanged from
+       the pre-fix measurement); 4 threads 3.8 s (within prior variance)
+```
+:::
+
+## recommendation
+
+### M: Surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: improves cohort QC at modest effort; the data already exists on
+stderr.
+
+#### description
+
+```
+type: text
+```
+
+Treat the stderr merge-reason summary as pipeline telemetry in QC reports.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: advisory guard against the compatibility flag's designed overstatement.
+
+#### description
+
+```
+type: text
+```
+
+The compatibility flag overstates confidence by design; measure target
+repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: operational tuning advice from the measured scaling curve.
+
+#### description
+
+```
+type: text
+```
+
+Scaling flattens beyond four workers in the current benchmark.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the largest remaining documented limitation of candidate
+discovery.
+
+#### description
+
+```
+type: text
+```
+
+Extend candidate discovery beyond exact ungapped blocks, removing the
+documented limitation.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: requested extension that leaves the required schema untouched.
+
+#### description
+
+```
+type: text
+```
+
+Overlap-length distributions and merge-rejection reason counts, keeping
+the required read-stats schema unchanged.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: performance polish; current throughput already meets the target.
+
+#### description
+
+```
+type: text
+```
+
+Profile and reduce record serialization in the single-process path.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: project hardening; no user-facing behavior depends on it.
+
+#### description
+
+```
+type: text
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### Benchmark re-measured after the fixes
+
+```
+level: low
+```
+
+#### reason
+
+Low: routine re-measurement, recorded so the committed numbers stay
+honest.
+
+#### description
+
+```
+type: table
+```
+
+| Threads | Time | Throughput | Peak RSS |
+| ------- | ---- | ---------- | -------- |
+| 1 | 7.6 s | 2,633 pairs/s | 224 MiB |
+| 2 | 4.8 s | 4,170 pairs/s | 258 MiB |
+| 4 | 3.8 s | 5,223 pairs/s | 259 MiB |
+
+The single-thread result matches the pre-fix measurement; the 4-thread
+figure sits inside the previously documented variance range. Committed
+results (`benchmarks/results/RESULTS.md`, `benchmark.parquet`) updated.
+
+#### evidence
+
+```
+level: high
+type: table
+```
+
+::: {.callout-note collapse="true"}
+`pixi run bench` output, 2026-10-21, after all six fixes.
+:::
+
+## process
+
+### Reproduce-first verification, then fix, then pin
+
+```
+status: right
+```
+
+#### description
+
+```
+type: text
+```
+
+1. Reproduced all six findings end-to-end before writing any fix; refuted
+   none, refined two (eligibility policy stays on original MAPQ; spill fix
+   needed bounded fan-in, not just generators).
+2. Implemented as one batch behind a written plan; every fix pinned by a
+   regression test derived from its reproduction.
+3. Re-ran the unchanged reproduction script, the full suite, quickcheck,
+   lint, format, and the benchmark before committing.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Plan: `docs/plans/20261021-131446_review-fixes.plan.qmd`; reproduction
+script kept outside the repo (`/tmp/pairloom_review_repro/repro.py`).
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mutation record for this batch, mirroring the reply's
+Changes block.
+
+#### description
+
+```
+type: text
+```
+
+- Updated: `src/pairloom/{merge,pipeline,parquetout,pairing,validate}.py`
+- Updated: `tests/{test_pairing,test_candidates_mapq,test_merge,test_classify_policy,test_cli,test_integration}.py`
+  (+10 tests)
+- Updated: `data/synthetic/{expected_merged.bam,expected_unmerged.bam,EXPECTED.md}`,
+  `README.md`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-131446_review-fixes.plan.qmd`, this report
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+- Packages: none; Environments: none
+- Git: `fix:` commit (code, tests, data, README, benchmark results) and
+  `docs:` commit (plan/report, audit, rolling state) on `main`, not pushed
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git log --oneline` after the two commits; working tree clean.
+:::
+
+## other
+
+None
