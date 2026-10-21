@@ -4,7 +4,9 @@ Merging operates on reference coordinates via :class:`ReadStructure`
 objects, never by naive string concatenation. The merged record represents
 the fragment in reference orientation:
 
-- outer soft clips of the leftmost/rightmost reads are preserved;
+- outer soft clips of the leftmost/rightmost mates (by aligned extent; on
+  equal coordinates the mate supporting the longer clip owns it) are
+  preserved;
 - internal soft clips are dropped (the other mate's aligned bases cover
   those reference positions);
 - overlapping aligned bases appear exactly once, resolved by the consensus
@@ -74,6 +76,31 @@ class _StrictSignal:
 STRICT = _StrictSignal()
 
 
+def _lead_owner(struct1: ReadStructure, struct2: ReadStructure) -> ReadStructure:
+    """The mate owning the fragment's outer leading clip.
+
+    The leftmost mate owns it by aligned start; on equal starts either mate
+    may carry the only outer sequence, so the longer (more supported) clip
+    wins, with struct1 kept on a full tie for determinism.
+    """
+    if struct1.start0 != struct2.start0:
+        return struct1 if struct1.start0 < struct2.start0 else struct2
+    return struct1 if len(struct1.lead_clip[0]) >= len(struct2.lead_clip[0]) else struct2
+
+
+def _trail_owner(struct1: ReadStructure, struct2: ReadStructure) -> ReadStructure:
+    """The mate owning the fragment's outer trailing clip.
+
+    The mate reaching the rightmost reference position owns it (a contained
+    mate starts later but ends earlier, so its trailing clip is internal);
+    on equal ends the longer (more supported) clip wins, with struct1 kept
+    on a full tie for determinism.
+    """
+    if struct1.end0 != struct2.end0:
+        return struct1 if struct1.end0 > struct2.end0 else struct2
+    return struct1 if len(struct1.trail_clip[0]) >= len(struct2.trail_clip[0]) else struct2
+
+
 def try_merge(
     struct1: ReadStructure,
     struct2: ReadStructure,
@@ -126,12 +153,11 @@ def try_merge(
     qual_parts: list[int] = []
     ops: list[tuple[int, int]] = []
 
-    left = struct1 if left_is_read1 else struct2
-    # The trailing outer clip belongs to the mate reaching the fragment's
-    # rightmost reference position. Its start position is not sufficient: a
-    # contained mate starts later but ends earlier, so its internal trailing
-    # clip must be dropped and the container's outer clip kept.
-    trail = struct1 if struct1.end0 >= struct2.end0 else struct2
+    # Outer clip owners: by aligned extent, ties toward the longer clip
+    # (equal coordinates give no ordering, and either mate may carry the
+    # only outer sequence past a shared start/end).
+    lead = _lead_owner(struct1, struct2)
+    trail = _trail_owner(struct1, struct2)
 
     def emit(op: int, length: int, bases: str, quals: tuple[int, ...] | list[int]) -> None:
         if length <= 0:
@@ -143,9 +169,9 @@ def try_merge(
         seq_parts.append(bases)
         qual_parts.extend(quals)
 
-    # Outer soft clips: the leftmost read's leading clip and the rightmost
-    # read's trailing clip, both already in reference orientation.
-    emit(CIGAR_S, len(left.lead_clip[0]), left.lead_clip[0], left.lead_clip[1])
+    # Outer soft clips: the owner mates' clips, already in reference
+    # orientation.
+    emit(CIGAR_S, len(lead.lead_clip[0]), lead.lead_clip[0], lead.lead_clip[1])
 
     for rpos in range(start, end):
         ins = _merge_insertion(rpos, struct1, struct2)

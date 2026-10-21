@@ -185,9 +185,14 @@ def process_template(records: list[Any], state: _WorkerState) -> TemplateResult:
             _adjust_single(r2, r1, state)
         else:
             classification = NEITHER_ALIGNED
+    elif r1 is None and r2 is None:
+        # No primary records at all (e.g. a filtered BAM holding only
+        # secondary/supplementary alignments): documented pass-through. No
+        # primary alignment evidence exists, so the template counts as
+        # neither_aligned; the records below stay untagged and unchanged.
+        classification = NEITHER_ALIGNED
     else:
         record = r1 if r1 is not None else r2
-        assert record is not None  # noqa: S101 - primaries checked above
         if record.flag & FLAG_UNMAPPED:
             classification = NEITHER_ALIGNED
         else:
@@ -265,14 +270,19 @@ def _both_mapped(
     struct1.mapq = orig_mapq1
     struct2.mapq = orig_mapq2
     contig = state.contig(r1.reference_id)
-    lo = min(struct1.start0, struct2.start0)
-    hi = max(struct1.end0, struct2.end0)
-    ref_seq = state.refcache.fetch(contig, lo, hi)
-    overlap = analyze_overlap(struct1, struct2, ref_seq, lo, cfg)
-    observations = [
-        (o.tid, o.rpos0, o.ref_base, o.base, o.strand_reverse, o.pair_disagrees)
-        for o in overlap.observations
-    ]
+    # Observations exist only where BOTH mates align a base (the aligned-
+    # span intersection), so only that reference slice is fetched: distant
+    # mates cost a read-sized fetch instead of the whole span between them.
+    ov_lo = max(struct1.start0, struct2.start0)
+    ov_hi = min(struct1.end0, struct2.end0)
+    observations: list[tuple[int, int, str, str, bool, bool]] = []
+    if ov_lo < ov_hi:
+        ref_seq = state.refcache.fetch(contig, ov_lo, ov_hi)
+        overlap = analyze_overlap(struct1, struct2, ref_seq, ov_lo, cfg)
+        observations = [
+            (o.tid, o.rpos0, o.ref_base, o.base, o.strand_reverse, o.pair_disagrees)
+            for o in overlap.observations
+        ]
 
     outcome = try_merge(
         struct1, struct2, cfg, has_non_primary=bool(others), merged_mapq=merged_mapq
@@ -334,7 +344,8 @@ def _apply_placement(
         record.set_tag("NM", 0, value_type="i")
         for tag in STALE_TAGS_REMOVED:
             if record.has_tag(tag):
-                record.remove_tag(tag)
+                # pysam (0.24) has no remove_tag(); set_tag(tag, None) deletes.
+                record.set_tag(tag, None)
     record.mapping_quality = adjusted_mapq(
         orig_mapq=record.mapping_quality,
         n_equiv=n_equiv,
@@ -489,6 +500,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
     stats = StatsCounter()
     reasons: Counter[str] = Counter()
     published: list[Path] = []
+    backups: list[tuple[Path, Path]] = []
     writers: dict[str, _BamWriter] = {}
     tmp_files: list[Path] = []
 
@@ -579,6 +591,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                             ) from exc
                         writer.tmp_path.unlink()
                         writer.tmp_path = sorted_tmp
+                        tmp_files.append(sorted_tmp)
 
                 index_files: list[tuple[Path, Path]] = []
                 if cfg.index_output:
@@ -592,8 +605,12 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                             ) from exc
                         final_idx = Path(str(writer.final_path) + ".bai")
                         index_files.append((idx_tmp, final_idx))
+                        tmp_files.append(idx_tmp)
 
                 # Atomic publish: BAMs, then indexes, then Parquet tables.
+                # Pre-existing outputs (possible only under --force) are
+                # moved aside first and restored on failure, so a failed
+                # run never destroys the previous results.
                 pairs: list[tuple[Path, Path]] = []
                 for writer in writers.values():
                     pairs.append((writer.tmp_path, writer.final_path))
@@ -602,18 +619,24 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                 pairs.append((disag_tmp, cfg.disagreement_parquet))
                 pairs.append((stats_tmp, cfg.read_stats_parquet))
                 for tmp, final in pairs:
+                    if final.exists():
+                        backup = Path(str(final) + f".pairloom-bak-{os.getpid()}")
+                        os.replace(final, backup)
+                        backups.append((backup, final))
                     os.replace(tmp, final)
                     published.append(final)
+                for backup, _final in backups:
+                    backup.unlink(missing_ok=True)
             finally:
                 input_file.close()
     except PairLoomError:
-        _rollback(writers, tmp_files, published)
+        _rollback(writers, tmp_files, published, backups)
         raise
     except OSError as exc:
-        _rollback(writers, tmp_files, published)
+        _rollback(writers, tmp_files, published, backups)
         raise OutputError(f"I/O failure: {exc}") from exc
     except Exception:
-        _rollback(writers, tmp_files, published)
+        _rollback(writers, tmp_files, published, backups)
         raise
 
     print(
@@ -688,14 +711,23 @@ def _drain_one(pending: deque, handle: Any) -> None:
         handle(result)
 
 
-def _rollback(writers: dict[str, _BamWriter], tmp_files: list[Path], published: list[Path]) -> None:
-    """Best-effort cleanup: remove temps and any already-published outputs."""
+def _rollback(
+    writers: dict[str, _BamWriter],
+    tmp_files: list[Path],
+    published: list[Path],
+    backups: list[tuple[Path, Path]] = (),
+) -> None:
+    """Best-effort cleanup: remove temps and already-published outputs,
+    then restore the backed-up previous outputs (present only when the run
+    overwrote existing files under --force)."""
     for writer in writers.values():
         writer.cleanup()
     for path in tmp_files:
         path.unlink(missing_ok=True)
     for path in published:
         path.unlink(missing_ok=True)
+    for backup, final in backups:
+        os.replace(backup, final)
 
 
 def _output_header(header_dict: dict, cfg: PairLoomConfig, sort_output: bool) -> dict:

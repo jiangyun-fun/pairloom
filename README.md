@@ -61,6 +61,9 @@ Existing output files are refused unless `--force` is given.
   duplicates nothing.
 - **Unmapped records** pass through and are tagged with their template's
   classification.
+- **Templates with only non-primary records** (possible in filtered BAMs)
+  have no primary alignment evidence: they pass through unchanged and
+  untagged and classify as `neither_aligned`.
 - **Orphans** (a mapped primary whose mate is missing or unmapped) receive
   single-read leftmost normalization (spec §3.1). With an unmapped mate
   present, the unmapped record's locus follows the mapped read.
@@ -171,7 +174,8 @@ Merging walks the reference span (never string concatenation):
 - outer soft clips are preserved with qualities: the leftmost read's
   leading clip, and the trailing clip of the mate reaching the fragment's
   rightmost reference position (a contained mate's trailing clip is
-  internal and dropped), both in reference orientation;
+  internal and dropped), both in reference orientation; when mates share
+  an aligned start or end, the mate supporting the longer clip owns it;
 - internal soft clips are dropped (the other mate's aligned bases cover
   those positions);
 - overlapping aligned bases appear exactly once;
@@ -259,7 +263,9 @@ overwrite it and fails loudly with a suggestion to pick another tag.
   the destination filesystem and `os.replace`d into place only after every
   writer succeeded. On any failure the temps and any already-published
   files are removed (best effort) — incomplete outputs are never presented
-  as complete. Index files (`.bai`, only with `--index-output`, which
+  as complete. Under `--force`, pre-existing outputs are moved aside before
+  publication and restored if the run fails, so a failed run never destroys
+  the previous results. Index files (`.bai`, only with `--index-output`, which
   implies `--sort-output`) are published with the same discipline and are
   validated like every other output: an existing index requires `--force`,
   and an index path colliding with another requested output is rejected
@@ -290,7 +296,9 @@ units bound parallel IPC, disagreement aggregation holds at most
 Parquet partials, and finalize merges those partials lazily with a bounded
 fan-in (cascading merges when spills exceed it) — each open stream holds at
 most one Parquet batch of rows, so finalize memory is a function of
-configuration, never of dataset size. Reference contigs are cached under a
+configuration, never of dataset size. Overlap analysis fetches only the
+intersection of the mates' aligned spans, so distant mates never allocate
+the span between them. Reference contigs are cached under a
 base budget (contigs larger than the budget stream through HTSlib). The
 whole BAM is never loaded.
 
@@ -325,7 +333,7 @@ whole BAM is never loaded.
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (130 tests, all 35 spec scenarios)
+pixi run test          # full pytest suite (137 tests, all 35 spec scenarios)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark

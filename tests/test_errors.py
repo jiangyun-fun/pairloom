@@ -70,6 +70,60 @@ class TestCorruptAndMissingInputs:
         all_outputs_absent(out)
 
 
+class TestPublishIntegrity:
+    def test_force_failure_restores_previous_outputs(self, fx, monkeypatch, tmp_path) -> None:
+        """A failed re-publish under --force must restore prior outputs.
+
+        Before the fix, os.replace destroyed the previous files and the
+        rollback deleted the replacements, permanently losing them.
+        """
+        import os
+
+        from pairloom.cli import main
+
+        fx.write_bam_and_set(fx.pair("pf", UNIQUE, UNIQUE + 5, read_len=20))
+        out = tmp_path / "pub"
+        out.mkdir()
+        argv = [
+            "--input",
+            str(fx.last_bam),
+            "--reference",
+            str(fx.ref_path),
+            "--mode",
+            "merge",
+            "--merged-bam",
+            str(out / "m.bam"),
+            "--unmerged-bam",
+            str(out / "u.bam"),
+            "--disagreement-parquet",
+            str(out / "d.parquet"),
+            "--read-stats-parquet",
+            str(out / "s.parquet"),
+        ]
+        assert main(argv) == 0
+        before = {p.name: p.read_bytes() for p in sorted(out.iterdir())}
+        assert set(before) == {"m.bam", "u.bam", "d.parquet", "s.parquet"}
+
+        real_replace = os.replace
+        fired = {"done": False}
+
+        def flaky(src, dst):
+            # One shot: fail the u.bam PUBLICATION only. Later os.replace
+            # calls with the same destination (the rollback's restore move)
+            # must pass, or the test would break what it verifies.
+            if not fired["done"] and str(dst).endswith("u.bam"):
+                fired["done"] = True
+                raise OSError(28, "injected failure at publish")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", flaky)
+        assert main(argv + ["--force"]) == 1
+        after = {p.name: p.read_bytes() for p in sorted(out.iterdir())}
+        assert after == before  # every previous output restored byte for byte
+        assert not list(out.glob("*.pairloom-bak-*"))
+        assert not list(out.glob("*.pairloom-tmp-*"))
+
+
 class TestInjectedFailures:
     def test_failed_parquet_write(self, pair_bam, fx, monkeypatch) -> None:
         """Scenario 30: Parquet failure aborts and publishes nothing."""

@@ -226,6 +226,52 @@ class TestRecordPolicy:
         by_type = dict(zip(stats["type"], stats["count"], strict=False))
         assert by_type["left_aligned_only"] == 1
 
+    def test_secondary_only_template_passes_through(self, fx) -> None:
+        """A template with no primary records passes through unchanged.
+
+        Possible in filtered BAMs; the documented non-primary pass-through
+        policy applies — no adjustment, no tagging, classified
+        neither_aligned (no primary alignment evidence exists).
+        """
+        ref = fx.ref_seqs["chr1"]
+        s1 = fx.make_record(
+            "sonly",
+            0x1 | 0x40 | 0x100,
+            UNIQUE,
+            "20M",
+            ref[UNIQUE : UNIQUE + 20],
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        s2 = fx.make_record(
+            "sonly",
+            0x1 | 0x80 | 0x100,
+            UNIQUE,
+            "20M",
+            ref[UNIQUE : UNIQUE + 20],
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        fx.write_bam_and_set([s1, s2])
+        code, out = fx.run(mode="adjust")
+        assert code == 0
+        recs = fx.read_bam(out["adjusted_bam"])
+        assert len(recs) == 2
+        for rec in recs:
+            assert rec.reference_start == UNIQUE  # never adjusted
+            assert not rec.has_tag("ZC")  # never tagged
+        stats = fx.read_parquet(out["read_stats_parquet"])
+        by_type = dict(zip(stats["type"], stats["count"], strict=False))
+        assert by_type["neither_aligned"] == 1
+        assert by_type["total"] == 1
+        # Merge mode: nothing merged; everything retained in the unmerged stream.
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        assert fx.read_bam(out["merged_bam"]) == []
+        unmerged = fx.read_bam(out["unmerged_bam"])
+        assert len(unmerged) == 2
+        assert all(not r.has_tag("ZC") for r in unmerged)
+
     def test_unmapped_mate_rnext_follows_movement(self, fx) -> None:
         """After the mapped mate slides, RNEXT/PNEXT update on BOTH records.
 

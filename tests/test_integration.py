@@ -78,6 +78,84 @@ class TestPairAwareOptimization:
         by_type = dict(zip(stats["type"], stats["count"], strict=False))
         assert by_type["mergeable"] == 1  # 16 >= min-overlap 10
 
+    def test_moved_read_with_stale_aligner_tags(self, fx) -> None:
+        """Stale aligner tags on moved reads are removed, not crashed on.
+
+        Real aligners (BWA) tag AS/XS/MQ on every primary; before the fix,
+        removing them on movement called a nonexistent pysam method and
+        aborted the run.
+        """
+        pair = fx.pair(
+            "tagged",
+            LONG_REPEAT + 4,
+            LONG_REPEAT + 16,
+            read_len=16,
+            tags={"AS": 16, "XS": 12, "MQ": 40},
+        )
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(mode="adjust")
+        assert code == 0
+        for rec in fx.read_bam(out["adjusted_bam"]):
+            assert rec.reference_start == LONG_REPEAT  # moved to leftmost
+            tags = dict(rec.get_tags())
+            assert "AS" not in tags and "XS" not in tags and "MQ" not in tags
+            assert tags["ZC"] == "mergeable"
+            assert tags["NM"] == 0
+
+
+class TestBoundedReferenceFetch:
+    def test_distant_mates_fetch_only_the_overlap(self, fx, monkeypatch) -> None:
+        """No reference fetch may span the gap between distant mates.
+
+        Old behaviour fetched the entire inter-mate span (100,002 bases
+        here) before the fragment-length rejection; every fetch must stay
+        bounded by the discovery window and read size.
+        """
+        import random
+
+        from pairloom.reference import ReferenceCache
+
+        rng = random.Random(11)
+        fx.ref_seqs = {"big": "".join(rng.choice("ACGT") for _ in range(200_000))}
+        fx.__post_init__()
+        big = fx.ref_seqs["big"]
+        r1 = fx.make_record(
+            "gap2",
+            0x1 | 0x40 | 0x2,
+            50_000,
+            "20M",
+            big[50_000:50_020],
+            contig="big",
+            mate_contig="big",
+            mate_pos=150_000,
+        )
+        r2 = fx.make_record(
+            "gap2",
+            0x1 | 0x80 | 0x10 | 0x20 | 0x2,
+            150_000,
+            "20M",
+            big[150_000:150_020],
+            contig="big",
+            mate_contig="big",
+            mate_pos=50_000,
+        )
+        fx.write_bam_and_set([r1, r2])
+        lengths: list[int] = []
+        orig = ReferenceCache.fetch
+
+        def spy(self, name, start0, end0):
+            lengths.append(end0 - start0)
+            return orig(self, name, start0, end0)
+
+        monkeypatch.setattr(ReferenceCache, "fetch", spy)
+        code, out = fx.run(mode="adjust")
+        assert code == 0
+        stats = fx.read_parquet(out["read_stats_parquet"])
+        by_type = dict(zip(stats["type"], stats["count"], strict=False))
+        assert by_type["both_aligned"] == 1  # kept, no overlap
+        assert lengths  # discovery still fetches, but bounded
+        assert max(lengths) < 2_000
+
 
 class TestSortOrderIndependence:
     def test_coordinate_and_qname_sorted_inputs_agree(self, fx) -> None:

@@ -185,6 +185,82 @@ class TestMergedMapqPolicy:
         assert rec.mapping_quality == 60
 
 
+class TestOuterClipTies:
+    """Equal aligned start/end coordinates: the longer supported clip owns."""
+
+    def _colocated(self, fx, r1_cigar, r2_cigar):
+        ref = fx.ref_seqs["chr1"]
+        r1_seq = ref[UNIQUE : UNIQUE + 20] + ("N" * 3 if r1_cigar.endswith("S") else "")
+        r2_seq = ref[UNIQUE : UNIQUE + 20] + ("N" * 5 if r2_cigar.endswith("S") else "")
+        r1 = fx.make_record(
+            "tie",
+            0x1 | 0x40 | 0x2,
+            UNIQUE,
+            r1_cigar,
+            r1_seq,
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        r2 = fx.make_record(
+            "tie",
+            0x1 | 0x80 | 0x10 | 0x20 | 0x2,
+            UNIQUE,
+            r2_cigar,
+            r2_seq,
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        fx.write_bam_and_set([r1, r2])
+
+    def test_equal_ends_keep_only_supported_trailing_clip(self, fx) -> None:
+        """Colocated 20M + 20M5S: R2's outer 5S must survive."""
+        self._colocated(fx, "20M", "20M5S")
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        rec = fx.read_bam(out["merged_bam"])[0]
+        ref = fx.ref_seqs["chr1"]
+        assert rec.cigarstring == "20M5S"
+        assert rec.query_sequence == ref[UNIQUE : UNIQUE + 20] + "NNNNN"
+
+    def test_equal_ends_prefer_longer_trailing_clip(self, fx) -> None:
+        """Colocated 20M3S + 20M5S: the longer (5S) outer clip wins."""
+        self._colocated(fx, "20M3S", "20M5S")
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        rec = fx.read_bam(out["merged_bam"])[0]
+        ref = fx.ref_seqs["chr1"]
+        assert rec.cigarstring == "20M5S"
+        assert rec.query_sequence == ref[UNIQUE : UNIQUE + 20] + "NNNNN"
+
+    def test_equal_starts_keep_only_supported_leading_clip(self, fx) -> None:
+        """Colocated 20M + 5S20M: R2's outer lead clip must survive."""
+        ref = fx.ref_seqs["chr1"]
+        r1 = fx.make_record(
+            "tl",
+            0x1 | 0x40 | 0x2,
+            UNIQUE,
+            "20M",
+            ref[UNIQUE : UNIQUE + 20],
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        r2 = fx.make_record(
+            "tl",
+            0x1 | 0x80 | 0x10 | 0x20 | 0x2,
+            UNIQUE,
+            "5S20M",
+            "NNNNN" + ref[UNIQUE : UNIQUE + 20],
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        fx.write_bam_and_set([r1, r2])
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        rec = fx.read_bam(out["merged_bam"])[0]
+        assert rec.cigarstring == "5S20M"
+        assert rec.query_sequence == "NNNNN" + ref[UNIQUE : UNIQUE + 20]
+
+
 class TestQualityModel:
     def test_unequal_quality_conflict_resolved(self, fx) -> None:
         """Scenario 10: the higher-quality base wins."""
