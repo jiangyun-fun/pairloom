@@ -557,3 +557,31 @@ Packages: None.
 Environments: none.
 
 Git: 1 commit in the project repo (this audit entry).
+
+## Explain eight pairmerge flags in detail
+
+```
+level: low
+date: 2026-10-21
+```
+
+### description
+
+Explain the usage of --library-orientation, --max-fragment-length, --min-mapq, --min-base-quality, --min-overlap, --conflict-policy, --candidate-source, --realign-window, and --max-candidates-per-read in more detail, in a readable form.
+
+### result
+
+1. Answered: explained the discovery trio (--candidate-source, --realign-window, --max-candidates-per-read) from candidates.py, including truncation and the reserved BAM-placement slot.
+2. Answered: explained --library-orientation (five models, equal-start tie rule), --max-fragment-length (span formula, dual gate), and the quality/merge gates with defaults and effects.
+3. Answered: noted cross-flag interactions — truncation caps MAPQ at min(orig,10), eligibility gates test the original aligner MAPQ, and conflict-policy decides only near-tie conflicts.
+
+### change
+
+Files:
+- Updated: `docs/misc/requirements_audit.qmd` (this entry)
+
+Packages: None.
+
+Environments: none.
+
+Git: 1 commit in the project repo (this audit entry).
