@@ -104,3 +104,32 @@ Packages: none.
 Environments: none.
 
 Git: 2 conventional commits on `main` (fix: code/tests/data/docs; docs: plan-report pair and audit), not pushed.
+
+## Archive repo to /tmp with only post-e66a0d0 commits
+
+```
+level: low
+date: 2026-10-21
+```
+
+### description
+
+Create an archived copy of the repository under /tmp/ whose history keeps only the two commits after e66a0d060353c19f04b91105d5d4d132f510eb0a (the review-fix batch), with identical content; leave the original repository untouched.
+
+### result
+
+1. Implemented `/tmp/pairloom-archive`: a clean git repo with exactly two commits (fix batch as new root 9bc3592, docs tip 45e6837).
+2. Verified the tip tree hash equals the original 8bae45c tree (31ad0bd9…), so the tracked content is byte-identical.
+3. Verified all older objects (e66a0d0, 4f22843, original 7b69ce0/8bae45c) are physically pruned after reflog expiry and gc.
+4. Confirmed the original repo at /bioproj/tools/github/pairloom is untouched (full history, clean tree).
+
+### change
+
+Files:
+- Created (outside the repo): `/tmp/pairloom-archive/` (git repo, 2 commits, packed 232K .git; untracked/ignored artifacts like .pixi and generated benchmark data are not part of a clone).
+
+Packages: None.
+
+Environments: none.
+
+Git: 1 commit in the project repo (this audit entry).
