@@ -1,0 +1,1099 @@
+---
+title: "PairLoom implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+### H: installable pairloom package with pairmerge CLI
+
+```
+level: high
+```
+
+#### reason
+
+The package installs into the pixi workspace, the console script runs end to end on both modes, and the full test suite passes — the direct evidence is in this report.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `pairloom` package (src layout, hatchling, Python ≥ 3.12) with 17 modules covering CLI, validation, adjustment, overlap analysis, merging, Parquet output, and orchestration.
+2. Both modes work: `adjust` writes adjusted/tagged mates plus both Parquet tables; `merge` additionally writes consensus reads to `--merged-bam` and all other records to `--unmerged-bam`.
+3. All specified CLI parameters exist with documented defaults, plus `--force-mapq60-exact`, `--max-pair-evaluations`, `--max-aggregation-records`, and `--chunk-size`.
+4. Validation exits 2 with actionable messages for missing mode outputs, wrong-mode outputs, duplicate paths, output-over-input, unwritable directories, missing `.fai`, and existing files without `--force`.
+
+#### before
+
+The repository held only an empty pixi workspace; no package, no CLI, and no validation surface existed.
+
+#### after
+
+`pixi run pairmerge` processes paired BAMs end to end with atomic output publishing and typed, actionable errors.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `pixi run pytest tests/ -q` → `120 passed in 3.54s` (2026-10-21).
+- `tests/test_cli.py::TestPathValidation` covers all seven validation branches with exit-code assertions.
+
+:::
+
+### H: repeat-aware joint adjustment with conservative MAPQ
+
+```
+level: high
+```
+
+#### reason
+
+Placement choice, MAPQ caps, and fallback behaviour are each pinned by dedicated passing tests, including a tandem-repeat integration case.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Exact-match ungapped blocks slide within `--realign-window`; alignment evidence is verified base by base, never inferred from CIGAR `M`.
+2. Joint R1/R2 optimization applies the documented hierarchy: constraints, score-tolerance window, overlap preference, then deterministic coordinate tie-breaks.
+3. MAPQ policy: ambiguous → `min(orig, 3)`, truncated → `min(orig, 10)`, unchanged → preserved, changed and exact with original MAPQ ≥ 30 → 60, else `min(orig, 25)`.
+4. When no candidate pair satisfies the constraints, the original BAM placements stay; mates never slide independently.
+
+#### before
+
+No adjustment existed: placements were whatever the input BAM carried, and repeat ambiguity was invisible to downstream tools.
+
+#### after
+
+Equivalent repeat placements resolve deterministically to the joint best pair, and repeated reads never carry MAPQ 60 without corroboration.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `tests/test_candidates_mapq.py` — orphan leftmost determinism; repeat MAPQ ≤ 3; corroborated move earns 60.
+- `tests/test_integration.py::TestPairAwareOptimization` — tandem-repeat pair adjusted to (400, 400) with synced mate fields and TLEN.
+- `src/pairloom/mapq.py` documents the policy table; README mirrors it.
+
+:::
+
+### H: Parquet statistics with bounded-memory aggregation
+
+```
+level: high
+```
+
+#### reason
+
+Schemas, counting rules, and spill correctness are asserted field by field with PyArrow, including a forced-spill run with a tiny threshold.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Disagreement table carries the exact eight-column schema (`seq_name`, `pos`, `ref`, `alt`, `dp`, `adf`, `adr`, `af`), reports only positions with mate disagreement, counts agreeing observations into `dp`, and emits one row per alternative allele.
+2. Read-stats table always holds all six categories; `total` equals the sum of the other five.
+3. Aggregation keeps at most `--max-aggregation-records` positions in memory, spills sorted Parquet partials, and k-way merges at finalize; integer counts make results scheduling-independent.
+
+#### before
+
+No statistical output existed; nothing reported mate disagreements or template classifications.
+
+#### after
+
+Both tables are written with ZSTD compression by default, stay schema-correct for zero rows, and never exceed the configured memory bound.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `tests/test_disagreement.py` — exact schema, spec §5.4 two-alt example, multi-allele depth, filters, ordering.
+- `tests/test_integration.py::TestBoundedMemory` — spill threshold 3 and batch size 2 still produce the exact expected table.
+
+:::
+
+### M: consensus merging with reconstructed CIGARs
+
+```
+level: medium
+```
+
+#### reason
+
+Core merging semantics are tested, but gapped-alignment sliding and a few exotic clip combinations remain unverified edge territory.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Merging walks reference coordinates: overlapping bases appear once, outer soft clips survive with qualities, internal clips are dropped.
+2. Shared deletions and insertions merge; conflicting interpretations reject the pair with documented reasons; fragment gaps are never synthesized.
+3. Quality model: agreement → `min(q1+q2, cap)`; conflicts resolve at Δ ≥ `--min-quality-difference`; unresolved conflicts emit `N` at Q2 or reject under `strict`.
+4. Merged records carry flag 0, the template QNAME, `min(mates)` MAPQ, recomputed NM/MD, no mate fields, and the preserved read group.
+
+#### before
+
+Mates always stayed separate records; overlapping sequence was counted twice by any downstream consumer.
+
+#### after
+
+One consensus record per successfully merged pair, with a valid reconstructed CIGAR and no duplication in the unmerged output.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `tests/test_merge.py` — spec §8.1 example, deletion and insertion merge/conflict, clip preservation, quality model, strict policy, RG conflict, no duplication.
+- `data/synthetic/expected_merged.bam` shows the equal-quality conflict as `N` at Q2.
+
+:::
+
+### M: reproducible benchmark with measured results
+
+```
+level: medium
+```
+
+#### reason
+
+The benchmark runs and its numbers are committed, but they are single-machine, single-dataset measurements whose variance across environments is unquantified.
+
+#### description
+
+```
+type: [statistic]
+```
+
+The benchmark generates a 2 Mbp reference with period-4 repeat islands and 20,000 pairs (20% repeat-derived, 2% both-unmapped, 0.2% per-base SNVs), then measures wall time, pairs per second, peak RSS, and a stage profile across thread counts.
+
+#### before
+
+No performance measurements existed for any component.
+
+#### after
+
+`pixi run bench` reproduces the scaling table and stage profile; results are committed under `benchmarks/results/`.
+
+#### evidence
+
+```
+level: medium
+type: [table]
+```
+
+::: {.callout-note collapse="true"}
+
+Measured 2026-10-21 on this machine (`benchmarks/results/RESULTS.md`):
+
+| threads | seconds | pairs/s | peak RSS (MiB) |
+| --- | --- | --- | --- |
+| 1 | 7.6 | 2,642 | 223 |
+| 2 | 4.9 | 4,092 | 258 |
+| 4 | 3.5 | 5,782 | 259 |
+
+:::
+
+## fix
+
+### H: reverse-strand records were double reverse-complemented
+
+```
+level: high
+severity: correctness
+```
+
+#### reason
+
+The defect fired on every reverse-strand mate with an indel, the SAM-spec reading was verified against `samtools calmd`, and a regression test pins the corrected behaviour.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Reverse-strand reads were reverse-complemented and their CIGARs mirrored before scoring, sliding, and merging.
+2. In BAM, SEQ/CIGAR/QUAL are already stored in reference orientation for both strands, so the transform flipped everything twice and misplaced indels — an R2 deletion at [520, 523) was read as [537, 540).
+3. The transform is removed; a plain CIGAR walk is correct for both strands, and fixtures store reference-orientation sequences directly.
+
+#### before
+
+Merges involving reverse mates with indels produced wrong CIGARs and spurious disagreements; reverse mates never slid.
+
+#### after
+
+Shared deletions in forward/reverse pairs merge correctly (`20M3D27M`, `MD 20^TTT 27`), and reverse reads participate in candidate discovery.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Debug output before the fix: `s2.deleted: [537, 538, 539]` for a deletion constructed at [520, 523).
+- After: `tests/test_merge.py::TestIndels::test_shared_deletion_merged` passes with the exact expected CIGAR, MD, and NM.
+- SAM-spec orientation confirmed empirically with `samtools calmd` on constructed forward/reverse records.
+
+:::
+
+### H: one-mate-deleted positions were silently resolved
+
+```
+level: high
+severity: correctness
+```
+
+#### reason
+
+The silent resolution contradicted the spec's indel-conflict requirement, and a targeted test now asserts rejection.
+
+#### description
+
+```
+type: [text]
+```
+
+1. When one mate deleted a reference position and the other aligned a base across it, the merger silently kept the aligned base and produced a plain-M CIGAR.
+2. Any (aligned, deleted) pairing at one reference position is now `indel_conflict`; the pair stays unmerged with both records retained.
+
+#### before
+
+Conflicting indel interpretations were papered over into an apparently clean consensus.
+
+#### after
+
+The pair is explicitly unmergeable with a documented reason, satisfying the spec's "irreconcilably inconsistent" requirement.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_merge.py::TestIndels::test_conflicting_deletion_unmergeable` asserts an empty merged BAM, two records in unmerged, and `both_aligned` classification; it failed before the fix.
+
+:::
+
+### H: fallback slid mates independently
+
+```
+level: high
+severity: correctness
+```
+
+#### reason
+
+The benchmark exposed it with 530 spurious orientation rejections that vanished after the fix — production-scale evidence, not a constructed edge case.
+
+#### description
+
+```
+type: [text]
+```
+
+1. When no candidate-pair combination satisfied orientation or fragment constraints, each mate was still moved to `placements[0]` — the leftmost candidate.
+2. Independent sliding could move R2 left of R1, breaking FR orientation for the retained records.
+3. `CandidateSet` now carries the current BAM placement and the fallback applies it; mates move only through joint selection.
+
+#### before
+
+About 2.7% of benchmark pairs were rejected as `orientation_incompatible` after the tool itself had broken them.
+
+#### after
+
+Benchmark rejections are only `insufficient_overlap` (biology); mergeable pairs rose from 9,458 to 9,989 of 20,000.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+- Before: `merge-reasons={'insufficient_overlap': ..., 'orientation_incompatible': 530}`.
+- After: `merge-reasons={'insufficient_overlap': 9565}`; `mergeable=9989`, `total=20000`.
+
+:::
+
+### M: score tolerance never governed overlap preference
+
+```
+level: medium
+```
+
+#### reason
+
+Unit tests pin both sides of the intended behaviour, and the change is small and local to the ranking key.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `pair-aware` ranked score above overlap even inside the tolerance window, so `--alignment-score-tolerance` had no effect on the choice.
+2. The tolerance now defines the near-equivalent set; inside it overlap ranks first, then residual score, then coordinates.
+3. `max-overlap` skips the filter entirely, preferring overlap among all constraint-satisfying pairs.
+
+#### before
+
+Near-equivalent placements were ordered by score alone; the documented tolerance parameter was inert.
+
+#### after
+
+Overlap resolves near-equivalents and can never override clearly superior evidence — matching the spec's hierarchy.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_pairing.py::TestSelectPair` — tolerance 0 → score wins; tolerance 10 → overlap wins; `max-overlap` → overlap wins regardless.
+
+:::
+
+### L: output stream keys and temp registration
+
+```
+level: low
+```
+
+#### reason
+
+Both defects failed fast and loudly in the first end-to-end run; each now has a regression test.
+
+#### description
+
+```
+type: [text]
+```
+
+1. BAM writers were keyed by config role (`adjusted_bam`) while template results used stream names (`adjusted`), raising `KeyError` on the first record.
+2. Parquet temp files were registered for rollback only after the write that could fail, leaving strays on failure.
+3. Writers are keyed by stream name and temps are registered before writing.
+
+#### before
+
+The pipeline crashed on its first record; failed runs could leave `.pairloom-tmp-*` files behind.
+
+#### after
+
+The first run round-trips, and injected Parquet failures clean up every temp file.
+
+#### evidence
+
+```
+level: low
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- First smoke run failed with `KeyError: 'adjusted'`; the rerun after the fix produced valid outputs.
+- `tests/test_errors.py::test_failed_parquet_write` asserts no leftover temps and no final outputs.
+
+:::
+
+## limitation
+
+### M: only exact-match ungapped blocks slide
+
+```
+level: medium
+```
+
+#### reason
+
+The boundary is explicit in the code path and documented, and no test exercises gapped sliding — because none exists.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Candidate discovery slides exact-match single-M-block alignments only.
+2. Mismatch- or indel-bearing alignments keep their BAM placement; indel re-anchoring is not implemented.
+3. Documented in README "Known limitations" and the report's plan.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`src/pairloom/candidates.py::discover_candidates` returns the current placement alone when `not exact or not slidable_cigar(cigar)`.
+
+:::
+
+### L: uniqueness claims are window-bounded
+
+```
+level: low
+```
+
+#### reason
+
+The bounded window is by design and its MAPQ consequence is tested; the residual risk is misreading window-local uniqueness as global.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Reference-based discovery searches `pos ± --realign-window`; global mapping uniqueness is never claimed.
+2. Truncated discovery caps MAPQ at 10, and MAPQ 60 additionally requires original-MAPQ corroboration.
+
+#### evidence
+
+```
+level: low
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "MAPQ policy" table; `tests/test_candidates_mapq.py::TestMapqPolicyUnit` pins every branch including the truncated cap.
+
+:::
+
+### L: N-skips and hard clips block merging
+
+```
+level: low
+```
+
+#### reason
+
+Both exclusions are conservative by design and asserted by code inspection; neither has a dedicated integration test.
+
+#### description
+
+```
+type: [text]
+```
+
+RNA-seq reference skips (N) inside a mate and hard-clipped mates (H) make pairs unmergeable with explicit reasons; synthesizing across a skip or an unavailable sequence would fabricate data.
+
+#### evidence
+
+```
+level: low
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`src/pairloom/merge.py::try_merge` returns `reference_skip_unsupported` / `hard_clipped_mate` before any consensus construction.
+
+:::
+
+## caveat
+
+### M: benchmark numbers are machine- and dataset-specific
+
+```
+level: medium
+```
+
+#### reason
+
+Two runs with different dataset shapes produced materially different throughputs, so transfer to other machines or datasets is unverified.
+
+#### description
+
+```
+type: [text]
+```
+
+Throughput and RSS depend on this machine, the dataset shape (inserts 120–280, 20% repeat pairs), and HTSlib/pyarrow versions. The stage-profile seconds are cumulative and overlapping. Reproduce with `pixi run bench`.
+
+#### evidence
+
+```
+level: medium
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+Two benchmark runs measured 4,233 and 2,642 pairs/s at one thread after the generator's insert distribution changed — expected sensitivity, recorded in `benchmarks/results/RESULTS.md`.
+
+:::
+
+### L: stage profile counts instrumentation overhead
+
+```
+level: low
+```
+
+#### reason
+
+The profiled stage sum visibly exceeds the unprofiled wall time; the inflation is measured, not assumed.
+
+#### description
+
+```
+type: [text]
+```
+
+Stage seconds come from `cProfile`; absolute values are inflated (record processing alone sums above the unprofiled run's wall time). Ratios are indicative, not exact.
+
+#### evidence
+
+```
+level: low
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+Profiled record-processing cumulative time 13.7 s versus 7.6 s unprofiled wall time for the same single-thread run.
+
+:::
+
+## assumption
+
+### M: default library model is FR
+
+```
+level: medium
+```
+
+#### reason
+
+The FR default matches standard Illumina libraries, but the actual input library architecture is never verified by the tool.
+
+#### description
+
+```
+type: [text]
+```
+
+The default `--library-orientation fr` (leftmost mate forward, rightmost reverse by reference position) assumes standard paired-end libraries; `rf`, `ff`, `rr`, and `any` are explicit flags honoured by both adjustment and merging.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_pairing.py::TestOrientation` parametrizes all five models; default documented in `--help` and README.
+
+:::
+
+### L: eligibility filters use original MAPQ
+
+```
+level: low
+```
+
+#### reason
+
+The rule follows from the self-referential-MAPQ observation, and its behaviour is tested; calling it an assumption reflects that the spec did not state which MAPQ applies.
+
+#### description
+
+```
+type: [text]
+```
+
+`--min-mapq` and `--min-base-quality` apply to the input BAM's MAPQ and base qualities, not to values PairLoom rewrote; otherwise our own conservative caps would disqualify repeat pairs with strong input evidence.
+
+#### evidence
+
+```
+level: low
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Tandem-repeat integration test: input MAPQ 60 → adjusted ≤ 3 → still mergeable; the test failed with `mapq_below_min` before the rule.
+
+:::
+
+## conclusion
+
+### H: all 22 acceptance criteria are verified
+
+```
+level: high
+```
+
+#### reason
+
+Each criterion maps to at least one passing test, the suite is green, lint is clean, and the benchmark reproduces.
+
+#### description
+
+```
+type: [text]
+```
+
+Spec §14 criteria 1–22 are each covered: deterministic repeat placement, joint optimization, no false MAPQ 60, reverse-strand overlap handling, disagreement-only positions, both-non-reference alleles, exact Parquet schemas, memory-bounded aggregation, mutually exclusive classifications, tags, one consensus per pair, unmerged preservation, overlap-once merging, outer clips, consistent merged records, explicit CLI paths, no prefix inference, nonzero exit on errors, no silent suppression, no false completion, determinism at scale, and reproducible tests and benchmarks.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `pixi run pytest tests/ -q` → `120 passed in 3.54s` (2026-10-21).
+- `pixi run lint` → `All checks passed`.
+- `samtools quickcheck` on all generated BAMs → exit 0.
+
+:::
+
+## recommendation
+
+### M: surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+The stderr summary is already produced and validated; wiring it into QC is low cost, but its diagnostic value in real cohorts is unmeasured.
+
+#### description
+
+```
+type: [text]
+```
+
+Treat the merge-reason counts printed to stderr as pipeline telemetry and include them in downstream QC reports, so orientation or fragment-length anomalies become visible per run.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: quantify repeat content before enabling force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+The flag's risk is documented and warned, but the actual overstatement rate for a given reference is unquantified.
+
+#### description
+
+```
+type: [text]
+```
+
+Before enabling `--force-mapq60-exact`, measure the target reference's repeat content; the compat flag overstates mapping confidence by design.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: use four workers with default chunking for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+The scaling measurement supports it on this machine, but the flattening beyond four workers is a single-dataset observation.
+
+#### description
+
+```
+type: [text]
+```
+
+For large cohorts prefer `--threads 4 --chunk-size 256`; measured scaling flattens beyond four workers in the current benchmark.
+
+#### evidence
+
+```
+level: low
+type: [table]
+```
+
+::: {.callout-note collapse="true"}
+
+| threads | seconds | pairs/s |
+| --- | --- | --- |
+| 1 | 7.6 | 2,642 |
+| 2 | 4.9 | 4,092 |
+| 4 | 3.5 | 5,782 |
+
+:::
+
+## next
+
+### M: slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+The path is clear (extend `discover_candidates` beyond exact blocks) and the limitation is already documented, but no design has been validated yet.
+
+#### description
+
+```
+type: [text]
+```
+
+Extend candidate discovery to mismatch- and indel-bearing alignments via bounded local realignment, removing the exact-block-only limitation.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: add optional merge-stats Parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+The data is already collected internally (reason counter, overlap lengths), so the work is mostly surface area.
+
+#### description
+
+```
+type: [text]
+```
+
+Add `--merge-stats-parquet` with overlap-length distributions and merge-rejection reason counts, keeping the required read-stats schema unchanged.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: optimize the single-process record round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Profiling shows record processing dominates, but the optimization is unstarted and its payoff is estimated, not measured.
+
+#### description
+
+```
+type: [text]
+```
+
+Optimize the per-template SAM-string serialization (`to_string`/`fromstring`) in the single-process path, identified as the largest cumulative cost in the profile.
+
+#### evidence
+
+```
+level: low
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+Profiled cumulative time for `process_template` plus serialization: 13.7 s of the single-thread profiled run.
+
+:::
+
+### L: add CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Standard practice for a package at this maturity; nothing blocks it beyond choosing runner sizing.
+
+#### description
+
+```
+type: [text]
+```
+
+Add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke) with Dependabot.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## observation
+
+### M: BAM SEQ orientation is reference-order for both strands
+
+```
+level: medium
+```
+
+#### reason
+
+Verified empirically with `samtools calmd` and consistent with the corrected pipeline's passing tests; stated without further interpretation.
+
+#### description
+
+```
+type: [text]
+```
+
+POS, CIGAR, SEQ, and QUAL are stored in reference orientation regardless of strand: a reverse-strand record's SEQ is the reverse complement of the original read, and its base 0 aligns to the leftmost reference position. `samtools calmd`'s literal stored-versus-forward comparison and aligner MD output are both consistent with this reading.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`samtools calmd` run on constructed forward and reverse records (session log, 2026-10-21): forward mismatch → `MD:Z:5A14`; reverse stored sequence compared literally against the forward reference.
+
+:::
+
+### L: self-referential MAPQ would deadlock merging
+
+```
+level: low
+```
+
+#### reason
+
+Observed directly as a failing test before the original-MAPQ rule; stated as behaviour, not interpretation.
+
+#### description
+
+```
+type: [text]
+```
+
+Filtering merges on PairLoom's own adjusted MAPQ caused the conservative repeat caps (≤ 3) to veto pairs whose input MAPQ was 60: the safety mechanism disabled the merge logic it protects.
+
+#### evidence
+
+```
+level: low
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Tandem-repeat integration test output before the rule: `mergeable=0` with reason `mapq_below_min`; after: `mergeable=1`.
+
+:::
+
+## process
+
+### H: staged implementation with test-driven correction loops
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. Built scaffold → core modules bottom-up → suite → benchmark → docs, committing per stage (five commits).
+2. Used the 35-scenario suite and the benchmark as adversarial checks; both drove out real defects (orientation convention, indel conflict, fallback sliding).
+3. Re-derived test expectations from first principles when they disagreed with the code, and fixed the code when the tests were right.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline`: ac573de scaffold, f378052 core pipeline, 059ab67 tests, 424f08f benchmark+README, ad436f7 synthetic dataset; final `pixi run test` green.
+
+:::
+
+### L: drafted the report before reading the report-format skill
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. Drafted the report from the CLAUDE.md floor rules alone, without reading `~/.claude/skills/report-format/SKILL.md` first.
+2. The validator rejected the draft for missing `reason` sections, `before`/`after` under feature/fix, and H3-formatted rolling items.
+3. The better action was to read the skill and its skeleton before writing; this report follows it.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Validator output from the first draft (session log, 2026-10-21): 60+ structural rejections, including the H4-sequence rule.
+
+:::
+
+## change
+
+### H: repository and environment mutations
+
+```
+level: high
+```
+
+#### reason
+
+These are directly observable facts from git history and the pixi lockfile.
+
+#### description
+
+```
+type: [table, text]
+```
+
+1. Created: package (17 modules), tests (10 files, 120 tests), benchmark plus results, synthetic dataset builder and expected outputs, plan/report/audit/rolling docs, README.
+2. Updated: `pixi.toml`, `pixi.lock`, `.gitignore`, `pyproject.toml`.
+3. Packages landed in pixi:default: `python>=3.12,<3.14`, `pysam>=0.24.1`, `pyarrow>=25`, `numpy>=2.5` (conda); `pairloom` editable plus `pytest`, `pytest-timeout`, `ruff`, `samtools`, `pip` (dev/pypi).
+4. Git: five conventional commits on `main`; no branches; nothing pushed.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `git log --oneline` (five commits, 2026-10-21).
+- `pixi run python -c "import pairloom; print(pairloom.__version__)"` → `0.1.0`.
+
+:::
+
+## other
+
+None

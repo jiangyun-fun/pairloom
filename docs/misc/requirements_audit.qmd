@@ -1,0 +1,40 @@
+---
+title: "PairLoom requirements audit"
+author: "Yun Jiang"
+---
+
+## Implement PairLoom package for pair-aware BAM realignment and merging
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+Implement a production-quality Python package (CLI `pairmerge`) that adjusts paired-end BAM alignments repeat-aware and deterministically, optimizes joint R1/R2 placement, applies conservative MAPQ policy, reports overlapping-base disagreements and template classifications as Parquet, and optionally merges overlapping mates into consensus records with correct CIGARs and preserved outer soft clips — with explicit per-output CLI paths, memory-bounded statistics, deterministic parallelism, and fail-loud error handling throughout.
+
+### result
+
+1. Implemented installable `pairloom` package (src layout, hatchling, pixi workspace) with `pairmerge` CLI covering both modes and all specified parameters.
+2. Implemented repeat-aware candidate discovery, joint pair optimization with the documented preference hierarchy and two strategies, and conservative MAPQ policy with corroboration requirement.
+3. Implemented CIGAR-aware overlap analysis with the exact disagreement Parquet schema, strand-aware counting, and memory-bounded spilling aggregation.
+4. Implemented classification + configurable BAM tagging with collision policy, and consensus merging with CIGAR reconstruction and outer soft clips.
+5. Implemented streaming pipeline with atomic publish, output-integrity rollback, and deterministic worker parallelism whose failures propagate.
+6. Answered spec §15 ambiguity list with documented defaults in README; established record policy (non-primary passthrough, orphan normalization).
+7. Fixed three bugs found during testing: reverse-strand SAM orientation, one-mate-deleted indel conflicts, independent mate sliding in fallback.
+
+### change
+
+Files:
+- Created: `pyproject.toml`, `README.md`, `src/pairloom/{__init__,exceptions,config,cigarops,reference,alignment,candidates,pairing,mapq,records,overlap,classify,merge,parquetout,validate,pipeline,cli}.py`
+- Created: `tests/{conftest,test_cigarops,test_pairing,test_candidates_mapq,test_disagreement,test_merge,test_classify_policy,test_cli,test_errors,test_integration}.py` (120 tests)
+- Created: `benchmarks/benchmark.py`, `benchmarks/results/`, `scripts/build_synthetic_dataset.py`, `data/synthetic/*`
+- Created: `docs/plans/20261021-110836_pairloom-implementation.{plan,report}.qmd`, `docs/misc/requirements_audit.qmd`, `docs/misc/next_and_recommendation.qmd`
+- Updated: `pixi.toml`, `pixi.lock`, `.gitignore`
+
+Packages: `pysam>=0.24.1, pyarrow>=25, numpy>=2.5, python>=3.12,<3.14 -> pixi:default (conda); pairloom (editable) -> pixi:default (pypi); pytest, pytest-timeout, ruff, samtools, pip -> pixi:default (dev feature)`
+
+Environments: none created beyond the workspace `default` environment.
+
+Git: 5 conventional commits on `main` (scaffold, core pipeline, tests, benchmark+README, synthetic dataset).

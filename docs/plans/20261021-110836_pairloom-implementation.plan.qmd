@@ -1,5 +1,5 @@
 ---
-title: "PairLoom implementation plan"
+title: "PairLoom implementation plan (as executed)"
 author: "Yun Jiang"
 date: today
 format:
@@ -19,87 +19,90 @@ include-in-header:
 
 Implement PairLoom (`pairmerge` CLI): a production-quality, high-performance
 Python package for pair-aware BAM realignment, overlap analysis, and read
-merging, per the full specification (15 sections). Correctness, determinism,
-bounded memory, and fail-loud error handling are first-class.
+merging, per the 15-section specification. Correctness, determinism, bounded
+memory, and fail-loud error handling are first-class.
 
-# Scope
+# Scope (as executed)
 
-- Package: `src/pairloom/` (hatchling, Python >= 3.12, deps: pysam, pyarrow,
-  numpy; dev: pytest, pytest-timeout, ruff, samtools for independent BAM
-  validation).
-- CLI `pairmerge` with `--mode {adjust,merge}` and explicit per-output paths.
-- Two Parquet outputs with exact documented schemas (pyarrow, ZSTD default,
-  batched writes, spill-to-disk aggregation for disagreements).
-- BAM outputs: adjusted / merged / unmerged, atomic publish, optional
-  coordinate sort + index.
-- Tests covering all 35 mandatory scenarios (synthetic fixtures, failure
-  injection, determinism across thread counts, schema checks).
-- Benchmarks: reproducible script + measured results; README with algorithms,
-  policies, defaults, limitations.
+- Package `src/pairloom/` — 17 modules: exceptions, config, cigarops,
+  reference, alignment, candidates, pairing, mapq, records, overlap,
+  classify, merge, parquetout, validate, pipeline, cli (+ `__init__`).
+- CLI `pairmerge` with `--mode {adjust,merge}`, explicit per-output paths,
+  full validation surface (exit 2), and concise-vs-debug error reporting
+  (exit 1).
+- Two Parquet outputs with exact documented schemas, ZSTD default,
+  batched writes, spill-to-disk k-way-merged disagreement aggregation.
+- Streaming pipeline: query-name grouping (temp sort for coordinate-sorted
+  input), chunked deterministic multiprocessing (spawn), atomic publish
+  with rollback, optional coordinate sort + index.
+- 120 pytest tests covering all 35 mandatory scenarios, including failure
+  injection, thread-count determinism, samtools quickcheck, and an AST
+  scan forbidding silent exception swallowing.
+- Reproducible benchmark (`benchmarks/benchmark.py`) with measured scaling
+  and stage profiles; results committed.
+- Synthetic example dataset with committed expected outputs; README with
+  algorithms, policies, schemas, defaults, limitations.
 
-# Key design decisions (selected defaults, spec §15)
+# Key design decisions (selected defaults)
 
-1. Record policy: only primary alignments participate in adjustment/merging.
-   Secondary/supplementary pass through unchanged; templates carrying them are
-   not merged (explicit reason `non_primary_records`), so nothing is discarded
-   or duplicated.
-2. Candidate discovery: BAM placements plus (default) reference-based sliding
-   of exact-match ungapped blocks within `--realign-window` (leftmost-first,
-   deterministic, capped by `--max-candidates-per-read`, truncation flagged).
-   Mismatch/indel-bearing alignments are not slid (documented limitation).
-3. MAPQ policy (documented table): ambiguity -> min(orig,3); truncated search
-   -> min(orig,10); unchanged -> preserve; changed exact match corroborated by
-   original MAPQ >= 30 -> 60; else min(orig,25). Optional compat flag forces
-   60 for exact matches with an explicit warning.
-4. Adjust mode still evaluates mergeability for classification/tagging, but
-   emits no consensus records.
-5. Status-tag collision: existing tag value that is not a PairLoom
-   classification string -> loud ConfigurationError (no silent overwrite).
-6. Merge requires identical RG when both mates carry one, else reason
-   `rg_conflict`; merged record keeps flags=0, qname preserved, MAPQ=min(mates).
-7. Consensus quality model: agree -> min(q1+q2, cap); disagree with
-   delta >= min-quality-difference -> higher-qual base at min(q_hi, cap);
-   unresolved -> `N` at low quality (policy `quality`) or unmergeable
-   (policy `strict`).
-8. Coordinate-sorted input is name-sorted to a temp file for streaming mate
-   grouping; outputs are written in template order (or coordinate order with
-   `--sort-output`).
-9. Parallelism: chunk-of-templates work units, ProcessPoolExecutor (spawn),
-   results consumed in submission order -> deterministic outputs; worker
-   exceptions propagate and abort the run with nonzero exit.
+1. Primary alignments only participate in adjustment/merging;
+   secondary/supplementary pass through unchanged and block merging
+   (`non_primary_records`) so nothing is discarded or duplicated.
+2. Candidate discovery slides only exact-match ungapped blocks within
+   `--realign-window`; mismatch/indel alignments keep their BAM placement.
+3. MAPQ policy: ambiguous → min(orig,3); truncated → min(orig,10);
+   unchanged → preserve; changed+exact+corroborated (orig ≥ 30) → 60;
+   else min(orig,25). Compatibility flag forces 60 with a warning.
+4. Pair-aware strategy filters candidates by score tolerance first, then
+   prefers overlap inside the surviving set; max-overlap prefers overlap
+   among all constraint-satisfying pairs.
+5. Eligibility filters (`--min-mapq`, `--min-base-quality`) apply to the
+   ORIGINAL aligner MAPQ, never to PairLoom's own conservative output.
+6. Fallback (no valid candidate pair) keeps ORIGINAL BAM placements —
+   mates never slide independently.
+7. Adjust mode evaluates mergeability for classification but emits no
+   consensus records.
+8. Status-tag collision with unrelated values fails loudly.
+9. Merged records: flag 0, template QNAME, MAPQ min(mates), NM/MD
+   recomputed, mate fields removed, RG preserved (conflict → unmergeable).
 
-# Planned steps
+# Steps actually taken
 
-1. Scaffold: pyproject.toml, pixi deps + tasks, package skeleton, CLI with
-   full validation surface.
-2. Core modules: exceptions, config, reference cache, CIGAR ops (NM/MD
-   recompute), candidate discovery, joint pair optimization, MAPQ policy.
-3. Overlap/disagreement analysis, classification + tagging, spilling Parquet
-   aggregation.
-4. Consensus merging + CIGAR reconstruction + merged-record semantics.
-5. Pipeline orchestration: streaming, workers, atomic publish, cleanup.
-6. Test suite (35 scenarios) + samtools quickcheck validation.
-7. Benchmarks + README + docs; requirements audit; this plan rewritten to
-   match reality; final report.
+1. Scaffold: pyproject, pixi workspace (pysam/pyarrow/numpy + dev feature),
+   plan document, README stub.
+2. Core modules written bottom-up: cigarops → reference → alignment →
+   candidates → pairing → mapq → records → overlap → classify → merge →
+   parquetout → validate → pipeline → cli.
+3. Test suite authored against the spec's 35 scenarios; failures drove out
+   three real implementation bugs (see the report) plus several test-side
+   arithmetic corrections.
+4. Benchmark authored and run; exposed the fallback-placement bug; fixed
+   and re-measured.
+5. Synthetic dataset + EXPECTED.md; README completed; audit and rolling
+   docs; report (this pair's `.report.qmd`).
 
-# Files to touch
+# Files touched
 
-- `pyproject.toml`, `pixi.toml`, `src/pairloom/*.py` (12 modules),
-  `tests/*.py` (conftest + ~10 files), `benchmarks/benchmark.py`,
-  `README.md`, `docs/plans/*`, `docs/misc/*`.
+`pyproject.toml`, `pixi.toml`, `pixi.lock`, `.gitignore`, `README.md`,
+`src/pairloom/*.py`, `tests/*.py` (10 files), `benchmarks/benchmark.py`,
+`benchmarks/results/*`, `scripts/build_synthetic_dataset.py`,
+`data/synthetic/*`, `docs/plans/*`, `docs/misc/*`.
 
-# Risks
+# Risks encountered
 
-- CIGAR/index arithmetic on reverse-strand reads (mitigate: normalize to
-  reference orientation by reverse-complement + reversed CIGAR early; hand
-  computed test expectations).
-- pysam serialization for IPC (mitigate: SAM-line strings + header dict).
-- MAPQ policy must never overstate uniqueness (covered by dedicated tests).
-- Benchmark runtime must stay bounded (50k default pairs, configurable).
+- Editable install via hatchling's `editables` machinery failed silently
+  in this environment; solved with `dev-mode-dirs = ["src"]`.
+- SAM reverse-strand storage convention (SEQ/CIGAR already in reference
+  orientation) was initially mis-modelled; an indel-placement test
+  exposed it and the whole transform was removed.
+- Test-side expectation arithmetic (overlap spans, merged lengths) needed
+  several corrections against first principles — the implementation was
+  right more often than the tests.
 
-# Verification criteria
+# Verification
 
-- All pytest suites pass (`pixi run test`).
-- samtools quickcheck on every generated BAM in integration tests.
-- Determinism: threads 1 vs 4 produce identical records + Parquet data.
-- Spec acceptance criteria 1-22 each covered by at least one test.
+- `pixi run test`: 120 passed (all 35 spec scenarios).
+- `pixi run lint` / `pixi run format`: clean.
+- samtools quickcheck on all generated BAMs: pass.
+- Determinism threads 1 vs 4: identical records and Parquet data.
+- Benchmark reproduced twice with consistent numbers.
