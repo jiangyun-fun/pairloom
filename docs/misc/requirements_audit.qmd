@@ -133,3 +133,68 @@ Packages: None.
 Environments: none.
 
 Git: 1 commit in the project repo (this audit entry).
+
+## Evaluate second review round before fixing
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+Assess five second-round third-party review findings (stale-tag crash, publish data loss under --force, clip tie regression, secondary-only abort, distant-mate fetch) against the actual code with independent reproductions, then propose an agreement position and wait for user confirmation before implementing.
+
+### result
+
+1. Answered: all five findings verified by code reading and reproductions; none refuted; one is a regression introduced by the first fix batch (trailing-clip tie).
+2. Answered: stale-tag crash proven at pysam API level (no remove_tag in 0.24.1; set_tag(tag, None) removes) and end-to-end (AS-tagged repeat pair exits 1).
+3. Answered: publish data loss reproduced — injected failure at u.bam publish with --force permanently removed the prior merged BAM.
+4. Answered: clip tie reproduced (colocated 20M + 20M5S merges to 20M); secondary-only template exits 1 on AssertionError; distant-mate fetch measured 100,020 bases for zero overlap.
+5. Answered: one extra gap found — lead-clip owner has the same start-tie drop; proposed mirrored fix.
+
+### change
+
+Files:
+- Updated: `docs/misc/next_and_recommendation.qmd` (added the pending second fix-batch item), `docs/misc/requirements_audit.qmd` (this entry).
+
+Packages: None.
+
+Environments: none.
+
+Git: none (evaluation only; reproduction script stayed in /tmp).
+
+## Apply the five confirmed second-round review fixes
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+After the user confirmed the second evaluation verdict, implement the five verified fixes (stale-tag removal, publish backup/restore under --force, clip-owner tie rules, secondary-only passthrough, intersection-only overlap fetch) plus the symmetric lead-clip tie gap and the temp-registration leak, with regression tests and documentation in sync.
+
+### result
+
+1. Implemented stale-tag removal via set_tag(tag, None) — moved reads with aligner tags (AS/XS/MQ) no longer crash; pysam has no remove_tag.
+2. Implemented publish backup/restore: existing outputs move aside before replacement, restored on failure — a failed --force run never destroys previous results.
+3. Implemented _lead_owner/_trail_owner: outer-clip owners by aligned extent, ties toward the longer supported clip on both ends.
+4. Implemented primary-less template passthrough as neither_aligned, untagged and unadjusted, in both modes.
+5. Implemented intersection-only reference fetching for overlap analysis; distant mates no longer allocate the inter-mate span.
+6. Refactored: +7 regression tests (137 total); README record policy, clip tie rule, publish integrity, and memory paragraphs updated; benchmark re-measured (unchanged).
+
+### change
+
+Files:
+- Updated: `src/pairloom/{merge,pipeline}.py`
+- Updated: `tests/{test_merge,test_classify_policy,test_errors,test_integration}.py` (+7 tests, 137 total)
+- Updated: `README.md`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-154633_review-fixes-2.plan.qmd`, `docs/plans/20261021-155559_review-fixes-2.report.qmd`
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+
+Packages: none.
+
+Environments: none.
+
+Git: 2 conventional commits on `main` (fix: code/tests/README/benchmark; docs: plan-report pair and audit), not pushed.

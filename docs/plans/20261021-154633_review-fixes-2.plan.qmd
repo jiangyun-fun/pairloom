@@ -1,0 +1,96 @@
+---
+title: "Second review-fix batch implementation plan (as executed)"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+# Objective
+
+Apply the five verified second-round review findings (plus the symmetric
+lead-clip gap found during evaluation and a temp-registration leak found
+during implementation) as one fix batch, keeping the suite green and the
+documented policies in sync.
+
+# Verified findings (all reproduced before fixing)
+
+1. `record.remove_tag()` does not exist in pysam 0.24.1 — any moved read
+   carrying a stale aligner tag (BWA tags `AS` on every primary) aborts the
+   run with `AttributeError`.
+2. Under `--force`, a failure between publications destroys previously
+   existing outputs: `os.replace` clobbers them and rollback deletes the
+   replacements without restoring the originals.
+3. Equal aligned ends always selected struct1 as the trailing-clip owner, so
+   a colocated `20M` + `20M5S` pair merged to `20M`, losing R2's 5 outer
+   bases (regression from the first fix batch). The lead owner had the
+   mirrored latent bug on equal starts.
+4. Templates with only secondary/supplementary records hit
+   `assert record is not None` and exited 1, contradicting the documented
+   pass-through policy.
+5. `_both_mapped` fetched the whole span between distant mates before the
+   fragment-length rejection (measured 100,020 bases for zero overlap).
+
+# Changes as executed
+
+- `src/pairloom/merge.py`: `_lead_owner`/`_trail_owner` helpers — aligned
+  extent first, then the longer clip on equal coordinates (deterministic
+  struct1 on a full tie); module docstring updated.
+- `src/pairloom/pipeline.py`:
+  - stale-tag removal via `set_tag(tag, None)` with a comment pinning the
+    pysam API fact;
+  - publish loop moves existing outputs aside (`.pairloom-bak-<pid>`),
+    deletes backups on success; `_rollback` restores them on failure;
+    sorted/index temps registered for cleanup;
+  - primary-less templates classify `neither_aligned` and pass through
+    untagged (documented §15-style default);
+  - overlap analysis fetches only the aligned-span intersection, skipped
+    entirely when empty.
+- Tests: 7 regressions added — tagged-move and bounded-fetch
+  (test_integration), publish-restore under a one-shot injected failure
+  (test_errors), three clip-tie cases (test_merge), secondary-only
+  pass-through in both modes (test_classify_policy). Suite 130 → 137.
+- README: primary-less record policy, clip tie rule, publish integrity
+  under `--force`, intersection-only fetch in the memory paragraph, test
+  count.
+
+# Steps actually taken
+
+1. Plan written; all five findings re-verified (pysam API check plus the
+   evaluation turn's reproduction script).
+2. Fixes 3 (merge.py) then 1/4/5/2 (pipeline.py); suite green after each
+   step.
+3. Regression tests added; the publish-restore test initially failed
+   because its injection also blocked the rollback's restore move (same
+   destination path) — corrected to a one-shot failure, which is the
+   realistic scenario anyway.
+4. ruff format applied to two test files; full gates re-run.
+5. Reproduction script re-run at the original bug sites: all five behaviors
+   corrected; benchmark re-measured (unchanged).
+
+# Verification
+
+- `pixi run test`: 137 passed (was 130; +7 regressions).
+- Reproduction re-run: tagged pair exits 0 with tags removed; injected
+  publish failure restores prior outputs; `20M5S` tie correct;
+  secondary-only template exits 0 as `neither_aligned`; max fetch 1,020
+  bases (was 100,020).
+- `pixi run lint` / `pixi run format`: clean.
+- Benchmark: 1 thread 7.6 s / 2,643 pairs/s / 224 MiB — unchanged.
+
+# Risks encountered
+
+- The publish-failure injection taught the rollback constraint the hard
+  way: restore moves share destination paths with publications, so failure
+  injection in tests must be one-shot.
+- Report and audit validators each rejected one item (structure/length);
+  corrected to the exact schema.

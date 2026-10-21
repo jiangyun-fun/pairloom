@@ -1,0 +1,756 @@
+---
+title: "Second review-fix batch implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+None
+
+## fix
+
+### Moved reads with stale aligner tags crashed the pipeline
+
+```
+level: high
+```
+
+#### reason
+
+High: real aligners (BWA) tag `AS` on every primary, and pysam 0.24.1 has no
+`remove_tag()` — so the first moved tagged read aborted the entire run,
+making the tool unusable on real BAM output.
+
+#### description
+
+```
+type: text
+```
+
+`_apply_placement` now removes stale scoring tags with
+`record.set_tag(tag, None)` (the documented pysam removal path, verified to
+delete `AS`/`XS`), with a comment pinning the API fact.
+
+#### before
+
+```text
+pairmerge: internal error (AttributeError):
+'AlignedSegment' object has no attribute 'remove_tag'
+adjust exit=1
+```
+
+#### after
+
+A repeat pair carrying `AS`/`XS`/`MQ` moves, drops exactly the stale tags,
+keeps `ZC`/`NM`/`MD`, and exits 0.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+API check: `has remove_tag: False`; `after set_tag(None): has AS: False`.
+Reproduction re-run: `adjust exit=0 (0 = fine; 1 = crash)`.
+Regression: `tests/test_integration.py::TestPairAwareOptimization::test_moved_read_with_stale_aligner_tags`.
+:::
+
+### Failed publication under --force destroyed previous outputs
+
+```
+level: high
+```
+
+#### reason
+
+High: permanent data loss. `os.replace` clobbered pre-existing outputs and
+the rollback deleted the replacements without restoring the originals, so a
+mid-publish failure left the user with nothing (or a torn mix).
+
+#### description
+
+```
+type: text
+```
+
+1. The publish loop moves each existing output aside to
+   `<final>.pairloom-bak-<pid>` before replacing it.
+2. On success the backups are deleted; `_rollback` now restores every
+   backup after removing temps and already-published files, so a failed run
+   returns the output directory to its pre-run state.
+3. Sorted/index temp files are now registered for rollback cleanup (they
+   previously leaked beside the destination on post-sort failures).
+
+#### before
+
+```text
+second run (failure injected at the u.bam publish) exit=1
+previous m.bam still present: False
+previous u.bam still present: True
+```
+
+#### after
+
+```text
+second run (failure injected at the u.bam publish) exit=1
+previous m.bam still present: True
+previous u.bam still present: True
+```
+
+Every previous output is restored byte for byte; no `.pairloom-bak-*` or
+`.pairloom-tmp-*` files remain.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_errors.py::TestPublishIntegrity::test_force_failure_restores_previous_outputs`
+(one-shot injected `os.replace` failure at the `u.bam` publication; asserts
+`after == before` on file bytes). Existing failure-injection tests still
+pass, confirming the rollback change breaks no prior guarantee.
+:::
+
+### Equal aligned coordinates dropped the supported outer clip
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: silent sequence loss in merged records. The trailing-clip owner
+always preferred struct1 on equal `end0` (a regression from the first fix
+batch), and the leading owner had the mirrored latent bug on equal
+`start0`.
+
+#### description
+
+```
+type: text
+```
+
+New `_lead_owner`/`_trail_owner` helpers select the outer-clip owner by
+aligned extent first (leftmost start; rightmost end — contained mates drop
+their internal clips), then, on equal coordinates, toward the mate
+supporting the longer clip; a full tie keeps struct1 for determinism.
+
+#### before
+
+Colocated `20M` + `20M5S` merged to `20M`, silently losing R2's five outer
+bases; colocated `20M` + `5S20M` dropped R2's leading clip the same way.
+
+#### after
+
+`20M5S` and `5S20M` respectively; with two clips on equal ends (`20M3S` +
+`20M5S`) the longer 5S wins and the shorter internal one is dropped.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+merged cigar=20M5S (correct: 20M5S — R2's outer clip carries 5 bases)
+```
+
+Regressions: `tests/test_merge.py::TestOuterClipTies` (3 tests: only-clip
+survives, longer clip wins, leading mirror). The batch-1 clip tests
+(contained mate, mirrored reverse clip) still pass.
+:::
+
+### Templates with only secondary records aborted instead of passing through
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: contradicted the documented non-primary pass-through policy and
+rejected legitimately filtered BAMs with an internal `AssertionError`.
+
+#### description
+
+```
+type: text
+```
+
+`process_template` now handles the primary-less case explicitly: records
+pass through unchanged and untagged, the template classifies as
+`neither_aligned` (no primary alignment evidence exists — a documented
+§15-style default that keeps the six-value stats schema stable), and merge
+mode routes everything to the unmerged stream.
+
+#### before
+
+```text
+pairmerge: internal error (AssertionError):
+adjust exit=1 (documented policy says pass through, so 0 expected)
+```
+
+#### after
+
+```text
+adjust exit=0; neither_aligned=1; records untagged and unadjusted
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Reproduction re-run output above; regression:
+`tests/test_classify_policy.py::TestRecordPolicy::test_secondary_only_template_passes_through`
+(covers adjust and merge modes, stats, tag absence, no adjustment).
+:::
+
+### Distant mates fetched the whole span between them
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: unbounded per-template allocation (span between mates, not bounded
+by any configuration) wasted memory and time before the pair was rejected
+for fragment length.
+
+#### description
+
+```
+type: text
+```
+
+`_both_mapped` now fetches only the intersection of the mates' aligned
+spans — observations exist only where both mates align a base
+(`analyze_overlap` reads `ref_seq` solely at positions in the intersection)
+— and skips the fetch entirely when the intersection is empty.
+
+#### before
+
+```text
+fetches=5, max span=100020 bases   (mates 100,000 bp apart, zero overlap)
+```
+
+#### after
+
+```text
+fetches=4, max span=1020 bases     (discovery window only)
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_integration.py::TestBoundedReferenceFetch::test_distant_mates_fetch_only_the_overlap`
+(fetch-length spy on a 200 kb contig; asserts max fetch < 2,000 where the
+old behavior fetched 100,002).
+:::
+
+## limitation
+
+### Equal-coordinate clips are selected, not consensus-merged
+
+```
+level: low
+```
+
+#### reason
+
+Low: narrow edge case (equal aligned start or end with clips on both
+mates); the chosen rule loses at most the shorter clip's distinct bases.
+
+#### description
+
+```
+type: text
+```
+
+When mates share an aligned start/end and both carry outer clips, the
+longer clip wins outright; PairLoom does not overlap-resolve the two clip
+sequences against each other.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## caveat
+
+### Stats semantics for primary-less templates
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: a documented classification default that shifts counts for users
+processing filtered BAMs.
+
+#### description
+
+```
+type: text
+```
+
+Templates with only non-primary records now count as `neither_aligned`
+(previously: hard failure). Pipelines summing classifications on filtered
+BAMs will see these templates appear in that bucket instead of aborting.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Pinned by `test_secondary_only_template_passes_through`; README record
+policy states the rule.
+:::
+
+## assumption
+
+### Fetch-bound test assumes default discovery window
+
+```
+level: low
+```
+
+#### reason
+
+Low: a test-bound constant; wrong only if defaults change without the test
+being revisited.
+
+#### description
+
+```
+type: text
+```
+
+The distant-mate test asserts every fetch stays under 2,000 bases, which
+holds for `--realign-window` 500 (window fetch ≈ 2 × 500 + read length) but
+would need adjustment if the default window grew past ~990.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## conclusion
+
+### All five second-round findings are fixed and regression-pinned
+
+```
+level: high
+```
+
+#### reason
+
+High: the batch's outcome statement, backed by the full gate run and the
+unchanged reproduction sites.
+
+#### description
+
+```
+type: text
+```
+
+1. All five fixes landed as one batch, each verified by a dedicated
+   regression test (7 new tests; suite 130 → 137 passing).
+2. The second-round reproduction script, re-run at the original bug sites,
+   shows every behavior corrected.
+3. Lint, format, and the benchmark are clean; single-thread throughput is
+   unchanged (7.6 s, 2,643 pairs/s, 224 MiB).
+4. One extra latent bug fixed beyond the review (lead-clip tie) and one
+   leak closed (sorted/index temps on post-sort failures).
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+pixi run test    -> 137 passed
+pixi run lint    -> All checks passed
+pixi run format  -> 29 files already formatted
+bench threads=1  -> 7.6 s, 2,643 pairs/s, peak RSS 224 MiB
+```
+:::
+
+## recommendation
+
+### M: Surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: improves cohort QC at modest effort; the data already exists on
+stderr.
+
+#### description
+
+```
+type: text
+```
+
+Treat the stderr merge-reason summary as pipeline telemetry in QC reports.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: advisory guard against the compatibility flag's designed overstatement.
+
+#### description
+
+```
+type: text
+```
+
+The compatibility flag overstates confidence by design; measure target
+repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: operational tuning advice from the measured scaling curve.
+
+#### description
+
+```
+type: text
+```
+
+Scaling flattens beyond four workers in the current benchmark.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the largest remaining documented limitation of candidate
+discovery.
+
+#### description
+
+```
+type: text
+```
+
+Extend candidate discovery beyond exact ungapped blocks, removing the
+documented limitation.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: requested extension that leaves the required schema untouched.
+
+#### description
+
+```
+type: text
+```
+
+Overlap-length distributions and merge-rejection reason counts, keeping
+the required read-stats schema unchanged.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: performance polish; current throughput already meets the target.
+
+#### description
+
+```
+type: text
+```
+
+Profile and reduce record serialization in the single-process path.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: project hardening; no user-facing behavior depends on it.
+
+#### description
+
+```
+type: text
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### Benchmark re-measured after the second fix batch
+
+```
+level: low
+```
+
+#### reason
+
+Low: routine re-measurement, recorded so the committed numbers stay
+honest.
+
+#### description
+
+```
+type: table
+```
+
+| Threads | Time | Throughput | Peak RSS |
+| ------- | ---- | ---------- | -------- |
+| 1 | 7.6 s | 2,643 pairs/s | 224 MiB |
+| 2 | 4.7 s | 4,280 pairs/s | 258 MiB |
+| 4 | 3.7 s | 5,396 pairs/s | 259 MiB |
+
+Single-thread throughput is identical to both prior measurements; the
+clip-owner and publish changes are not on any hot path that matters here.
+
+#### evidence
+
+```
+level: high
+type: table
+```
+
+::: {.callout-note collapse="true"}
+`pixi run bench` output, 2026-10-21, after the second fix batch.
+:::
+
+## process
+
+### Reproduce, fix, re-verify at the same sites
+
+```
+status: right
+```
+
+#### description
+
+```
+type: text
+```
+
+1. All five findings reproduced end-to-end before any fix (one also proven
+   at the pysam API level); none refuted; one acknowledged as a regression
+   from the first batch.
+2. Implemented as one batch behind a written plan; every fix pinned by a
+   regression test derived from its reproduction.
+3. Re-ran the unchanged reproduction script, the full suite, lint, format,
+   and the benchmark before committing.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Plan: `docs/plans/20261021-154633_review-fixes-2.plan.qmd`; reproduction
+script kept outside the repo (`/tmp/pairloom_review2_repro/repro.py`). One
+test-side correction during development: the publish-failure injection had
+to be one-shot because the rollback's restore move shares the destination
+path with the publication it replaces.
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mutation record for this batch, mirroring the reply's Changes
+block.
+
+#### description
+
+```
+type: text
+```
+
+- Updated: `src/pairloom/{merge,pipeline}.py`
+- Updated: `tests/{test_merge,test_classify_policy,test_errors,test_integration}.py`
+  (+7 tests, 137 total)
+- Updated: `README.md`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-154633_review-fixes-2.plan.qmd`, this report
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+- Packages: none; Environments: none
+- Git: `fix:` commit (code, tests, README, benchmark results) and `docs:`
+  commit (plan/report, audit, rolling state) on `main`, not pushed
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git log --oneline` after the two commits; working tree clean.
+:::
+
+## other
+
+None
