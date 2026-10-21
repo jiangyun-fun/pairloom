@@ -123,6 +123,59 @@ class TestPublishIntegrity:
         assert not list(out.glob("*.pairloom-bak-*"))
         assert not list(out.glob("*.pairloom-tmp-*"))
 
+    def test_backup_cleanup_failure_preserves_committed_outputs(
+        self, fx, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """Post-commit backup-cleanup failure keeps the committed outputs.
+
+        Before the commit point existed, a failed backup unlink triggered a
+        full rollback that destroyed every published output and could not
+        restore the already-deleted backups.
+        """
+        import os
+
+        from pairloom.cli import main
+
+        fx.write_bam_and_set(fx.pair("bc", UNIQUE, UNIQUE + 5, read_len=20))
+        out = tmp_path / "bak"
+        out.mkdir()
+        argv = [
+            "--input",
+            str(fx.last_bam),
+            "--reference",
+            str(fx.ref_path),
+            "--mode",
+            "adjust",
+            "--adjusted-bam",
+            str(out / "a.bam"),
+            "--disagreement-parquet",
+            str(out / "d.parquet"),
+            "--read-stats-parquet",
+            str(out / "s.parquet"),
+        ]
+        assert main(argv) == 0
+        real_unlink = os.unlink
+        fired = {"done": False}
+
+        def flaky(path, *args, **kwargs):
+            if not fired["done"] and "d.parquet.pairloom-bak" in str(path):
+                fired["done"] = True
+                raise OSError(1, "injected cleanup failure")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", flaky)
+        code = main(argv + ["--force"])
+        assert code == 0  # committed outputs stay committed
+        # All requested outputs exist (rewritten by the second run).
+        for name in ("a.bam", "d.parquet", "s.parquet"):
+            assert (out / name).exists(), name
+        # The a.bam backup was removed; the failed one remains and is reported.
+        baks = sorted(p.name for p in out.glob("*.pairloom-bak-*"))
+        assert baks == [f"d.parquet.pairloom-bak-{os.getpid()}"]
+        captured = capsys.readouterr()
+        assert "could not remove backup file(s)" in captured.err
+        assert "d.parquet.pairloom-bak" in captured.err
+
 
 class TestInjectedFailures:
     def test_failed_parquet_write(self, pair_bam, fx, monkeypatch) -> None:

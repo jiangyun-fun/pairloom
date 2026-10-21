@@ -67,8 +67,9 @@ Existing output files are refused unless `--force` is given.
 - **Orphans** (a mapped primary whose mate is missing or unmapped) receive
   single-read leftmost normalization (spec §3.1). With an unmapped mate
   present, the unmapped record's locus follows the mapped read.
-- A template with more than two primary records violates pairing invariants
-  and fails loudly (`DataInvariantError`).
+- A template with more than two primary records, or with duplicate primary
+  read1/read2 records, violates pairing invariants and fails loudly
+  (`DataInvariantError`).
 - Coordinate-sorted inputs are query-name-sorted to a temporary file for
   streaming mate grouping; query-name-sorted inputs stream directly.
   Outputs are written in template order unless `--sort-output`.
@@ -93,7 +94,9 @@ alignment evidence: every candidate of such a read is equivalent by
 construction. Mismatch- or indel-bearing alignments keep their BAM
 placement. Discovery is bounded and never claims global uniqueness; hitting
 the candidate cap flags the read *truncated* and triggers a conservative
-MAPQ cap.
+MAPQ cap. The BAM's own placement always keeps a slot when the cap
+truncates the set, so the achievable mate overlap never shrinks because of
+truncation.
 
 ### Joint R1/R2 optimization
 
@@ -147,8 +150,11 @@ pair whose input evidence was strong.
 Adjusted records keep their strand, flags (0x2 recomputed), mate
 coordinates, and TLEN consistently updated; `NM`/`MD` are recomputed for
 moved (always exact) placements as `NM:i:0` / `MD:<span>`; stale scoring
-tags that cannot be reproduced faithfully (`AS`, `XS`, `SA`, `MC`, `MQ`,
-`XA`) are removed rather than guessed at.
+tags that cannot be reproduced faithfully (`AS`, `XS`, `SA`, `MC`, `XA`)
+are removed rather than guessed at. `MQ` (mate MAPQ) is the exception:
+both mates' MAPQs are PairLoom-adjusted, so `MQ` is refreshed from the
+adjusted values even when a placement did not move, and is removed when
+the mate is unmapped or absent from the template.
 
 ### Overlap analysis and disagreement statistics
 
@@ -265,7 +271,10 @@ overwrite it and fails loudly with a suggestion to pick another tag.
   files are removed (best effort) — incomplete outputs are never presented
   as complete. Under `--force`, pre-existing outputs are moved aside before
   publication and restored if the run fails, so a failed run never destroys
-  the previous results. Index files (`.bai`, only with `--index-output`, which
+  the previous results. Once every output is published the run has
+  committed: backup removal after that point is best-effort, and a cleanup
+  failure keeps the committed outputs in place while reporting the leftover
+  backup files on stderr. Index files (`.bai`, only with `--index-output`, which
   implies `--sort-output`) are published with the same discipline and are
   validated like every other output: an existing index requires `--force`,
   and an index path colliding with another requested output is rejected
@@ -333,7 +342,7 @@ whole BAM is never loaded.
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (137 tests, all 35 spec scenarios)
+pixi run test          # full pytest suite (143 tests, all 35 spec scenarios)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark

@@ -124,6 +124,34 @@ class TestAmbiguousRepeatPair:
             assert rec.mapping_quality <= 10
 
 
+class TestMateMapqTag:
+    def test_mq_refreshed_when_only_mapq_changes(self, fx) -> None:
+        """Repeat-ambiguous unchanged placements: MQ follows the adjusted MAPQ.
+
+        The placement does not move, so the old code never entered the
+        stale-tag removal branch and left MQ:i:60 next to MAPQ 3.
+        """
+        pair = fx.pair("mq", LONG_REPEAT, LONG_REPEAT, read_len=16, tags={"MQ": 60})
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(mode="adjust")
+        assert code == 0
+        for rec in fx.read_bam(out["adjusted_bam"]):
+            assert rec.reference_start == LONG_REPEAT  # unchanged placement
+            assert rec.mapping_quality == 3
+            assert dict(rec.get_tags())["MQ"] == 3
+
+    def test_mq_follows_movement(self, fx) -> None:
+        """After joint movement, MQ reflects the mate's adjusted MAPQ."""
+        pair = fx.pair("mq2", LONG_REPEAT + 4, LONG_REPEAT + 16, read_len=16, tags={"MQ": 60})
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(mode="adjust")
+        assert code == 0
+        for rec in fx.read_bam(out["adjusted_bam"]):
+            assert rec.reference_start == LONG_REPEAT
+            assert rec.mapping_quality == 3
+            assert dict(rec.get_tags())["MQ"] == 3
+
+
 class TestUniqueExact:
     def test_unique_read_preserves_mapq(self, fx) -> None:
         """Unique placement, unchanged: original MAPQ survives."""

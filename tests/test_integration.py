@@ -98,9 +98,50 @@ class TestPairAwareOptimization:
         for rec in fx.read_bam(out["adjusted_bam"]):
             assert rec.reference_start == LONG_REPEAT  # moved to leftmost
             tags = dict(rec.get_tags())
-            assert "AS" not in tags and "XS" not in tags and "MQ" not in tags
+            assert "AS" not in tags and "XS" not in tags
+            assert tags["MQ"] == 3  # refreshed to the mate's adjusted MAPQ
             assert tags["ZC"] == "mergeable"
             assert tags["NM"] == 0
+
+    def test_truncated_candidates_keep_original_placement(self, fx) -> None:
+        """The BAM placement survives the candidate cap; overlap is not lost.
+
+        R1 at 444 has 12 occurrences in the tandem repeat (cap 10) and its
+        original placement used to fall out of the kept set, shrinking the
+        achievable overlap with R2 (at 452, spanning the repeat boundary)
+        from 12 to 4 bases and rejecting the merge.
+        """
+        ref = fx.ref_seqs["chr1"]
+        r1 = fx.make_record(
+            "cap",
+            0x1 | 0x40 | 0x2,
+            444,
+            "20M",
+            ref[444:464],
+            mate_contig="chr1",
+            mate_pos=452,
+        )
+        r2 = fx.make_record(
+            "cap",
+            0x1 | 0x80 | 0x10 | 0x20 | 0x2,
+            452,
+            "20M",
+            ref[452:472],
+            mate_contig="chr1",
+            mate_pos=444,
+        )
+        fx.write_bam_and_set([r1, r2])
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        rec = fx.read_bam(out["merged_bam"])[0]
+        assert rec.reference_start == 444  # original placement kept
+        assert rec.cigarstring == "28M"
+        assert rec.mapping_quality == 3  # still conservative (truncated/ambiguous)
+        # Parity with BAM-only discovery, which always keeps the placement.
+        code, out_bam = fx.run(mode="merge", extra=["--candidate-source", "bam"])
+        assert code == 0
+        rec_bam = fx.read_bam(out_bam["merged_bam"])[0]
+        assert (rec_bam.reference_start, rec_bam.cigarstring) == (444, "28M")
 
 
 class TestBoundedReferenceFetch:

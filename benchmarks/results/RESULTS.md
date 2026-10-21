@@ -7,18 +7,18 @@
 
 | threads | seconds | pairs/s | peak RSS (MiB) |
 | --- | --- | --- | --- |
-| 1 | 7.6 | 2,643 | 224 |
-| 2 | 4.7 | 4,280 | 258 |
-| 4 | 3.7 | 5,396 | 259 |
+| 1 | 7.8 | 2,562 | 225 |
+| 2 | 5.0 | 3,985 | 260 |
+| 4 | 3.6 | 5,534 | 261 |
 
 ## Stage profile (single thread, cumulative seconds)
 
 | stage | seconds |
 | --- | --- |
-| bam_read_and_grouping | 0.22 |
-| candidate_discovery | 2.63 |
-| pair_optimization | 1.43 |
-| overlap_analysis | 2.48 |
-| consensus_merge | 5.07 |
-| parquet_aggregation | 0.91 |
-| record_processing | 14.09 |
+| bam_read_and_grouping | 0.24 |
+| candidate_discovery | 2.70 |
+| pair_optimization | 1.46 |
+| overlap_analysis | 2.58 |
+| consensus_merge | 5.20 |
+| parquet_aggregation | 0.95 |
+| record_processing | 14.56 |

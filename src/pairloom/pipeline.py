@@ -367,6 +367,8 @@ def _adjust_single(record: Any, mate: Any | None, state: _WorkerState) -> None:
     placement = single_read_leftmost(cands)
     _apply_placement(record, placement, len(cands.placements), cands.truncated, state)
     if mate is None:
+        # No mate record in the template: a reciprocal MQ cannot exist.
+        record.set_tag("MQ", None)
         return
     # SAM convention: an unmapped mate carries the mapped read's locus.
     if mate.reference_id == -1 or mate.reference_id == record.reference_id:
@@ -380,16 +382,24 @@ def _adjust_single(record: Any, mate: Any | None, state: _WorkerState) -> None:
     # mapped mate).
     mate.next_reference_id = record.reference_id
     mate.next_reference_start = record.reference_start
+    # MQ semantics: the mapped record's mate is unmapped (tag removed); the
+    # unmapped record's MQ reflects the mapped mate's ADJUSTED MAPQ.
+    record.set_tag("MQ", None)
+    mate.set_tag("MQ", record.mapping_quality, value_type="i")
     _set_proper_flag(record, False)
     _set_proper_flag(mate, False)
 
 
 def _sync_mate_fields(r1: Any, r2: Any) -> None:
-    """Refresh mate coordinates and TLEN after adjustment."""
+    """Refresh mate coordinates, reciprocal MQ, and TLEN after adjustment."""
     r1.next_reference_id = r2.reference_id
     r1.next_reference_start = r2.reference_start
     r2.next_reference_id = r1.reference_id
     r2.next_reference_start = r1.reference_start
+    # Reciprocal MQ (mate MAPQ) follows the ADJUSTED values — also when only
+    # the MAPQ changed (repeat-ambiguous placements that did not move).
+    r1.set_tag("MQ", r2.mapping_quality, value_type="i")
+    r2.set_tag("MQ", r1.mapping_quality, value_type="i")
     if r1.reference_id == r2.reference_id and r1.reference_id >= 0:
         start = min(r1.reference_start, r2.reference_start)
         end = max(r1.reference_start + _ref_len(r1), r2.reference_start + _ref_len(r2))
@@ -625,8 +635,22 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                         backups.append((backup, final))
                     os.replace(tmp, final)
                     published.append(final)
+                # Commit point: every requested output is now published and
+                # complete. Backup removal is post-commit housekeeping: a
+                # failure here must never roll back (and destroy) committed
+                # outputs, so leftovers are reported loudly instead.
+                leftover: list[Path] = []
                 for backup, _final in backups:
-                    backup.unlink(missing_ok=True)
+                    try:
+                        backup.unlink()
+                    except OSError:
+                        leftover.append(backup)
+                if leftover:
+                    print(
+                        "pairmerge: warning: could not remove backup file(s); "
+                        "delete them manually: " + ", ".join(str(p) for p in leftover),
+                        file=sys.stderr,
+                    )
             finally:
                 input_file.close()
     except PairLoomError:

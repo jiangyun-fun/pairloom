@@ -3,8 +3,8 @@
 Records are grouped by query name from a query-name-sorted stream. Primary
 alignments drive pair processing; secondary, supplementary, and unmapped
 records pass through unchanged (never silently discarded). A template with
-more than two primary records violates a documented invariant and fails
-loudly.
+more than two primary records, or with duplicate primary read1/read2
+records, violates a documented invariant and fails loudly.
 """
 
 from __future__ import annotations
@@ -83,6 +83,8 @@ def split_primaries(records: list[Any]) -> tuple[list[Any], list[Any]]:
 
 def check_pair_flags(primaries: list[Any], name: str) -> None:
     """Validate the read1/read2 flag structure of primary records."""
+    seen_r1 = 0
+    seen_r2 = 0
     for record in primaries:
         if not (record.flag & FLAG_PAIRED):
             continue
@@ -93,3 +95,12 @@ def check_pair_flags(primaries: list[Any], name: str) -> None:
                 f"primary record {name!r} sets both or neither of read1/read2 flags "
                 f"(flag {record.flag})"
             )
+        seen_r1 += is_r1
+        seen_r2 += is_r2
+    if seen_r1 > 1 or seen_r2 > 1:
+        # Two primaries claiming the same read slot would silently overwrite
+        # each other in the processing loop below; reject loudly instead.
+        raise DataInvariantError(
+            f"template {name!r} has duplicate primary read1/read2 records "
+            f"(read1={seen_r1}, read2={seen_r2}); input violates pairing invariants"
+        )

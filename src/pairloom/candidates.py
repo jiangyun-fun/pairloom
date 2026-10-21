@@ -98,6 +98,12 @@ def discover_candidates(
         raise DataInvariantError(f"exact block not found at own position in {context}")
     truncated = len(occurrences) > cfg.max_candidates_per_read
     kept = sorted(occurrences)[: cfg.max_candidates_per_read]
+    if pos0 not in kept:
+        # The BAM's own placement must survive truncation: dropping it can
+        # only reduce the pair search's achievable overlap (the fallback
+        # path still holds it via ``current``). Reserve the last kept slot,
+        # so the cap is honored.
+        kept = sorted([*kept[:-1], pos0])
     placements = tuple(
         Placement(tid=tid, pos0=p, cigar=cigar, score=len(block), exact=True) for p in kept
     )

@@ -272,6 +272,66 @@ class TestRecordPolicy:
         assert len(unmerged) == 2
         assert all(not r.has_tag("ZC") for r in unmerged)
 
+    def test_orphan_stale_mq_removed(self, fx) -> None:
+        """Orphan MQ semantics: removed on the mapped record, refreshed on
+        the unmapped mate."""
+        import pysam
+
+        r1 = fx.make_record(
+            "omq",
+            0x1 | 0x40,
+            UNIQUE,
+            "20M",
+            fx.ref_seqs["chr1"][UNIQUE : UNIQUE + 20],
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+            tags={"MQ": 60},
+        )
+        hdr = pysam.AlignmentHeader.from_dict(fx.header_dict())
+        r2 = pysam.AlignedSegment(hdr)
+        r2.query_name = "omq"
+        r2.flag = 0x1 | 0x80 | 0x4
+        r2.reference_id = 0
+        r2.reference_start = UNIQUE
+        r2.next_reference_id = 0
+        r2.next_reference_start = UNIQUE
+        r2.mapping_quality = 0
+        r2.query_sequence = "A" * 20
+        r2.query_qualities = pysam.qualitystring_to_array("I" * 20)
+        r2.set_tag("MQ", 60, value_type="i")
+        fx.write_bam_and_set([r1, r2])
+        code, out = fx.run(mode="adjust")
+        assert code == 0
+        recs = {r.flag & 0xC0: r for r in fx.read_bam(out["adjusted_bam"])}
+        assert "MQ" not in dict(recs[0x40].get_tags())  # mate is unmapped
+        assert dict(recs[0x80].get_tags())["MQ"] == 60  # mapped mate's MAPQ
+
+    def test_duplicate_primary_read_numbers_fail_loudly(self, fx) -> None:
+        """Two primary R1 records must not silently overwrite each other."""
+        ref = fx.ref_seqs["chr1"]
+        ra = fx.make_record(
+            "dup",
+            0x1 | 0x40,
+            UNIQUE,
+            "20M",
+            ref[UNIQUE : UNIQUE + 20],
+            mate_contig="chr1",
+            mate_pos=UNIQUE + 100,
+        )
+        rb = fx.make_record(
+            "dup",
+            0x1 | 0x40,
+            UNIQUE + 100,
+            "20M",
+            ref[UNIQUE + 100 : UNIQUE + 120],
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        fx.write_bam_and_set([ra, rb])
+        code, out = fx.run(mode="adjust")
+        assert code == 1
+        assert not out["adjusted_bam"].exists()
+
     def test_unmapped_mate_rnext_follows_movement(self, fx) -> None:
         """After the mapped mate slides, RNEXT/PNEXT update on BOTH records.
 
