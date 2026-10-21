@@ -1,0 +1,589 @@
+---
+title: "Fourth review-fix batch implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+None
+
+## fix
+
+### Post-commit failures still deleted published outputs
+
+```
+level: high
+```
+
+#### reason
+
+High: data loss. The batch-3 commit point was comment-only — after the
+last publication, exceptions from `input_file.close()` or the
+TemporaryDirectory cleanup still reached the rollback handlers, which
+deleted every published output.
+
+#### description
+
+```
+type: text
+```
+
+1. An explicit `committed` flag is set immediately after the last
+   publication.
+2. When committed, every exception handler skips rollback entirely,
+   prints a post-commit warning (outputs kept), and re-raises; an OSError
+   becomes an `OutputError` naming the post-commit state.
+3. Pre-commit failures keep the full backup/restore rollback, unchanged
+   and regression-tested.
+
+#### before
+
+```text
+second run (cleanup failure after publication) exit=1
+files after: []
+```
+
+#### after
+
+```text
+second run (cleanup failure after publication) exit=1
+files after: ['a.bam', 'd.parquet', 's.parquet']
+pairmerge: warning: failure after publication; all outputs were already
+           published and are kept (no rollback).
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_errors.py::TestPublishIntegrity::test_post_commit_failure_keeps_published_outputs`
+(one-shot `TemporaryDirectory.cleanup` failure; asserts exit 1, all
+outputs present, and the post-commit messages on stderr). The batch-3
+publish-restore and cleanup-litter tests still pass.
+:::
+
+### Colocated mates received same-sign TLEN
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: invalid metadata per the SAM spec — TLEN signs must be opposite
+within a template even when both segments cover identical coordinates,
+and a first-party test pinned the invalid value.
+
+#### description
+
+```
+type: text
+```
+
+`_sync_mate_fields` assigns `(tlen, -tlen)` on equal starts: read1 takes
+the positive sign, per the SAM TLEN tie rule (SAMv1 §1.4.1). The
+`(400,400)` integration-test expectation changed from both-positive to
+`(+16, -16)`.
+
+#### before
+
+```text
+flag=67 pos=500 tlen=20
+flag=179 pos=500 tlen=20
+```
+
+#### after
+
+```text
+flag=67 pos=500 tlen=20
+flag=179 pos=500 tlen=-20
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_integration.py::TestPairAwareOptimization::test_colocated_mates_tlen_signs`;
+updated expectation in `test_joint_overlap_maximization` (read2 now
+`-16`).
+:::
+
+### Mixed paired/unpaired validation depended on record order
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: silent record loss for one ordering of an invalid template — the
+unpaired primary was overwritten in the processing slot when it came
+first.
+
+#### description
+
+```
+type: text
+```
+
+`process_template` validates the primary group as a whole before
+assigning slots: mixed paired/unpaired primaries raise regardless of
+order, and more than one unpaired primary raises explicitly (previously
+misreported as a mix).
+
+#### before
+
+```text
+order [0, 65] (unpaired first) exit=0  <- silently accepts
+order [65, 0] (paired first) exit=1    <- correctly rejects
+```
+
+#### after
+
+```text
+order [0, 65] exit=1 (same DataInvariantError both ways)
+order [65, 0] exit=1
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regressions: `tests/test_classify_policy.py::TestRecordPolicy::test_mixed_paired_unpaired_rejected_in_any_order`,
+`test_two_unpaired_primaries_rejected`.
+:::
+
+## limitation
+
+None
+
+## caveat
+
+### Post-commit failures exit 1 with complete outputs
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: a two-tier post-commit contract is now documented behavior;
+downstream automation must not assume exit 1 implies missing outputs.
+
+#### description
+
+```
+type: text
+```
+
+After the commit point: backup-removal litter warns and exits 0; any
+other failure warns, exits 1, and leaves every published output in place.
+The error message names the post-commit state explicitly.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Pinned by the post-commit regression test and stated in the README
+failure-policy section.
+:::
+
+## assumption
+
+None
+
+## conclusion
+
+### All three fourth-round findings are fixed and regression-pinned
+
+```
+level: high
+```
+
+#### reason
+
+High: the batch's outcome statement, backed by the full gate run and the
+unchanged reproduction sites.
+
+#### description
+
+```
+type: text
+```
+
+1. All three fixes landed as one batch, each pinned by a regression test
+   (4 new tests; suite 143 → 147 passing) and one first-party
+   expectation corrected to the SAM-conformant TLEN.
+2. The fourth-round reproduction script, re-run at the original bug
+   sites, shows every behavior corrected.
+3. Lint and format are clean; the benchmark stays within range
+   (1 thread: 7.7 s, 2,590 pairs/s, 225 MiB).
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+pixi run test    -> 147 passed
+pixi run lint    -> All checks passed
+pixi run format  -> 29 files already formatted
+bench threads=1  -> 7.7 s, 2,590 pairs/s, peak RSS 225 MiB
+```
+:::
+
+## recommendation
+
+### M: Surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: improves cohort QC at modest effort; the data already exists on
+stderr.
+
+#### description
+
+```
+type: text
+```
+
+Treat the stderr merge-reason summary as pipeline telemetry in QC reports.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: advisory guard against the compatibility flag's designed overstatement.
+
+#### description
+
+```
+type: text
+```
+
+The compatibility flag overstates confidence by design; measure target
+repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: operational tuning advice from the measured scaling curve.
+
+#### description
+
+```
+type: text
+```
+
+Scaling flattens beyond four workers in the current benchmark.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the largest remaining documented limitation of candidate
+discovery.
+
+#### description
+
+```
+type: text
+```
+
+Extend candidate discovery beyond exact ungapped blocks, removing the
+documented limitation.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: requested extension that leaves the required schema untouched.
+
+#### description
+
+```
+type: text
+```
+
+Overlap-length distributions and merge-rejection reason counts, keeping
+the required read-stats schema unchanged.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: performance polish; current throughput already meets the target.
+
+#### description
+
+```
+type: text
+```
+
+Profile and reduce record serialization in the single-process path.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: project hardening; no user-facing behavior depends on it.
+
+#### description
+
+```
+type: text
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### Benchmark re-measured after the fourth fix batch
+
+```
+level: low
+```
+
+#### reason
+
+Low: routine re-measurement, recorded so the committed numbers stay
+honest.
+
+#### description
+
+```
+type: statistic
+```
+
+Single thread: 7.7 s, 2,590 pairs/s, peak RSS 225 MiB — back within the
+previously observed 2.56–2.64k band; the batch adds no measurable cost.
+
+#### evidence
+
+```
+level: high
+type: statistic
+```
+
+::: {.callout-note collapse="true"}
+`pixi run bench` output, 2026-10-21, after the fourth fix batch.
+:::
+
+## process
+
+### Reproduce, fix, re-verify at the same sites
+
+```
+status: right
+```
+
+#### description
+
+```
+type: text
+```
+
+1. All three findings reproduced end-to-end before any fix; the first was
+   an explicit refutation of my own batch-3 design (comment-only commit
+   point), acknowledged in the evaluation turn.
+2. Implemented as one batch behind a written plan; every fix pinned by a
+   regression test derived from its reproduction.
+3. One first-party expectation corrected deliberately (TLEN sign).
+4. Re-ran the unchanged reproduction script, the full suite, lint, format,
+   and the benchmark before committing.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Plan: `docs/plans/20261021-164205_review-fixes-4.plan.qmd`; reproduction
+script kept outside the repo (`/tmp/pairloom_review4_repro/repro.py`).
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mutation record for this batch, mirroring the reply's Changes
+block.
+
+#### description
+
+```
+type: text
+```
+
+- Updated: `src/pairloom/pipeline.py`
+- Updated: `tests/{test_errors,test_integration,test_classify_policy}.py`
+  (+4 tests, 147 total; 1 TLEN expectation corrected)
+- Updated: `README.md`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-164205_review-fixes-4.plan.qmd`, this report
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+  (includes the prior evaluation turn's pending entries)
+- Packages: none; Environments: none
+- Git: `fix:` commit (code, tests, README, benchmark results) and `docs:`
+  commit (plan/report, audit, rolling state) on `main`, not pushed
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git log --oneline` after the two commits; working tree clean.
+:::
+
+## other
+
+None

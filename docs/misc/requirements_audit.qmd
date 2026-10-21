@@ -319,3 +319,65 @@ Packages: None.
 Environments: none.
 
 Git: 1 commit in the project repo (this audit entry).
+
+## Evaluate fourth review round before fixing
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+Assess three fourth-round third-party review findings (post-commit rollback still destroying outputs, same-sign TLEN for colocated mates, order-dependent mixed paired/unpaired validation) against the actual code with independent reproductions, then propose an agreement position and wait for user confirmation before implementing.
+
+### result
+
+1. Answered: all three findings verified by code reading and reproductions; none refuted.
+2. Answered: batch-3 commit point was incomplete — a tempdir-cleanup failure after publication still rolled back and deleted all outputs (reproduced, files after: []).
+3. Answered: colocated mates emit tlen +20/+20 (SAM requires opposite signs); the (400,400) integration test pins the invalid value.
+4. Answered: mixed [0,65] order exits 0 with the unpaired record silently overwritten; [65,0] exits 1.
+
+### change
+
+Files:
+- Updated: `docs/misc/next_and_recommendation.qmd` (added the pending fourth fix-batch item), `docs/misc/requirements_audit.qmd` (this entry).
+
+Packages: None.
+
+Environments: none.
+
+Git: none (evaluation only; reproduction script stayed in /tmp).
+
+## Apply the three confirmed fourth-round review fixes
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+After the user confirmed the fourth evaluation verdict (read1-positive TLEN on ties; two-tier post-commit contract), implement the three verified fixes with regression tests and documentation in sync.
+
+### result
+
+1. Implemented the explicit committed flag: post-commit exceptions skip rollback, warn that outputs are kept, and re-raise; outputs are never deleted after publication.
+2. Implemented the SAM TLEN tie rule: equal-start mates get (+tlen, -tlen) with read1 positive; the (400,400) test expectation corrected.
+3. Implemented order-independent primary-group validation: mixed paired/unpaired and multiple unpaired primaries both fail loudly regardless of record order.
+4. Refactored: +4 regression tests (147 total); README updated (TLEN rule, post-commit contract, test count); benchmark re-measured (2,590 pairs/s, in range).
+
+### change
+
+Files:
+- Updated: `src/pairloom/pipeline.py`
+- Updated: `tests/{test_errors,test_integration,test_classify_policy}.py` (+4 tests, 147 total)
+- Updated: `README.md`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-164205_review-fixes-4.plan.qmd`, `docs/plans/20261021-164453_review-fixes-4.report.qmd`
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+
+Packages: none.
+
+Environments: none.
+
+Git: 2 conventional commits on `main` (fix: code/tests/README/benchmark; docs: plan-report pair, audit, rolling state), not pushed.

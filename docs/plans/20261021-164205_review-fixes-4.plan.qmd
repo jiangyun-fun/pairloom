@@ -1,0 +1,81 @@
+---
+title: "Fourth review-fix batch implementation plan (as executed)"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+# Objective
+
+Apply the three verified fourth-round review findings as one fix batch,
+keeping the suite green and the documented policies in sync.
+
+# Verified findings (all reproduced before fixing)
+
+1. The batch-3 "commit point" was comment-only: after all publications, an
+   exception from `input_file.close()` or the TemporaryDirectory cleanup
+   still reached the rollback handlers and deleted every published output
+   (`files after: []`).
+2. Equal-start mates received `(tlen, tlen)` — both positive — violating
+   the SAM TLEN opposite-sign rule; the (400,400) integration test pinned
+   the invalid value.
+3. Mixed paired/unpaired primaries were validated in slot-assignment
+   order: an unpaired record followed by a paired R1 silently overwrote
+   the slot (exit 0), while the reverse order raised (exit 1).
+
+# Changes as executed
+
+- `src/pairloom/pipeline.py`:
+  - `committed` flag set immediately after the last publication; every
+    exception handler skips rollback when committed, prints a post-commit
+    warning (`_warn_committed`), and re-raises; OSError becomes an
+    OutputError naming the post-commit state;
+  - `_sync_mate_fields` equal-start tie: `(tlen, -tlen)`, read1 positive;
+  - `process_template` validates the primary group as a whole before slot
+    assignment (mixed paired/unpaired and multiple unpaired primaries both
+    raise regardless of order).
+- Tests: 4 regressions added — post-commit tempdir-cleanup failure keeps
+  outputs (test_errors), colocated TLEN signs (test_integration),
+  order-independent mixed rejection and double-unpaired rejection
+  (test_classify_policy). One first-party expectation corrected:
+  `test_joint_overlap_maximization` read2 TLEN 16 → -16. Suite 143 → 147.
+- README: TLEN tie rule in the adjusted-records paragraph, the two-tier
+  post-commit contract in the failure policy, test count 147.
+- Benchmark re-measured (7.7 s, 2,590 pairs/s, 225 MiB — in range).
+
+# Steps actually taken
+
+1. Plan written; all three findings re-verified via the reproduction
+   script (the first an explicit refutation of the batch-3 design).
+2. Fixes applied; the (400,400) integration test failed as expected and
+   its expectation was corrected to the SAM-conformant sign.
+3. Four regressions added; ruff format applied to three files; full gates
+   re-run.
+4. Reproduction script re-run at the original bug sites: all three
+   behaviors corrected; benchmark re-measured.
+
+# Verification
+
+- `pixi run test`: 147 passed (was 143; +4 regressions).
+- Reproduction re-run: cleanup failure exits 1 with all outputs kept and
+  the post-commit messages on stderr; colocated mates show `+20/-20`;
+  both orders of the mixed template exit 1.
+- `pixi run lint` / `pixi run format`: clean.
+- Benchmark: 1 thread 7.7 s / 2,590 pairs/s / 225 MiB — within the
+  documented range.
+
+# Risks encountered
+
+- None beyond the confirmed design decisions (read1-positive TLEN;
+  two-tier post-commit contract), both documented in README and the
+  report.
