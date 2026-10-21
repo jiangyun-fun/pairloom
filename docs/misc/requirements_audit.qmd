@@ -227,3 +227,66 @@ Packages: None.
 Environments: none.
 
 Git: 1 commit in the project repo (this audit entry).
+
+## Evaluate third review round before fixing
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+Assess four third-round third-party review findings (post-commit backup cleanup data loss, original placement dropped by candidate truncation, stale MQ tags, duplicate primary read numbers) against the actual code with independent reproductions, then propose an agreement position and wait for user confirmation before implementing.
+
+### result
+
+1. Answered: all four findings verified by code reading and reproductions; none refuted.
+2. Answered: backup-cleanup failure reproduced — all final outputs destroyed, a.bam unrecoverable after FileNotFoundError during restore.
+3. Answered: truncated candidates reproduced — R1 moved to 436, overlap 4 vs 12, merge lost vs bam-only discovery.
+4. Answered: stale MQ reproduced (mapq=3, MQ=60 both mates); duplicate primary R1s exit 0 with the first record silently unprocessed.
+
+### change
+
+Files:
+- Updated: `docs/misc/next_and_recommendation.qmd` (added the pending third fix-batch item), `docs/misc/requirements_audit.qmd` (this entry).
+
+Packages: None.
+
+Environments: none.
+
+Git: none (evaluation only; reproduction script stayed in /tmp).
+
+## Apply the four confirmed third-round review fixes
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+After the user confirmed the third evaluation verdict (including the two design decisions: post-commit cleanup failure keeps outputs and warns; MQ is set from the known adjusted values), implement the four verified fixes with regression tests and documentation in sync.
+
+### result
+
+1. Implemented the commit point: backup removal after a successful publication is best-effort housekeeping; failure keeps committed outputs, reports leftovers on stderr, exits 0.
+2. Implemented the original-placement slot: truncated candidate sets always keep the BAM placement, restoring merge parity with bam-only discovery.
+3. Implemented reciprocal MQ refresh from adjusted MAPQs in _sync_mate_fields; orphans remove it on the mapped record and refresh it on the unmapped mate.
+4. Implemented duplicate read1/read2 primary rejection in check_pair_flags with DataInvariantError and no published output.
+5. Refactored: +6 regression tests (143 total; 1 batch-2 expectation updated to the refreshed-MQ policy); README updated; benchmark re-measured (within range).
+
+### change
+
+Files:
+- Updated: `src/pairloom/{pipeline,candidates,records}.py`
+- Updated: `tests/{test_errors,test_integration,test_candidates_mapq,test_classify_policy}.py` (+6 tests, 143 total)
+- Updated: `README.md`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-162107_review-fixes-3.plan.qmd`, `docs/plans/20261021-162455_review-fixes-3.report.qmd`
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+
+Packages: none.
+
+Environments: none.
+
+Git: 2 conventional commits on `main` (fix: code/tests/README/benchmark; docs: plan-report pair, audit, rolling state), not pushed.

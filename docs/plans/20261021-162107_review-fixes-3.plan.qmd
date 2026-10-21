@@ -1,0 +1,91 @@
+---
+title: "Third review-fix batch implementation plan (as executed)"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+# Objective
+
+Apply the four verified third-round review findings as one fix batch,
+keeping the suite green and the documented policies in sync.
+
+# Verified findings (all reproduced before fixing)
+
+1. Backup cleanup ran inside the rollback scope: a failed backup `unlink`
+   after a fully successful publication triggered full rollback, deleting
+   the committed outputs and failing to restore the already-deleted
+   backups (every final file destroyed, `a.bam` unrecoverable).
+2. Candidate truncation kept only the leftmost
+   `--max-candidates-per-read` occurrences; when the BAM placement fell
+   beyond the cap it left the pair-search pool (overlap 12 became 4, merge
+   lost vs `--candidate-source bam`).
+3. Stale-tag removal only ran when coordinates changed; a MAPQ-only change
+   left `MQ:i:60` next to an adjusted MAPQ of 3.
+4. `check_pair_flags` validated records in isolation, so duplicate primary
+   read1 records passed and silently overwrote each other in the
+   processing slot.
+
+# Changes as executed
+
+- `src/pairloom/pipeline.py`:
+  - commit point after the publish loop; backup removal is post-commit
+    housekeeping — failure collects leftovers, warns on stderr, exits 0
+    with committed outputs preserved;
+  - `_sync_mate_fields` sets reciprocal `MQ` from the adjusted MAPQs;
+  - `_adjust_single` removes `MQ` on the mapped record of an orphan,
+    refreshes it on the unmapped mate, and drops it for lone records.
+- `src/pairloom/candidates.py`: when truncation drops the BAM placement,
+  the last kept slot is reserved for it (cap honored, truncation flag
+  unchanged).
+- `src/pairloom/records.py`: `check_pair_flags` counts read1/read2 slots
+  and rejects duplicates with `DataInvariantError`; module docstring
+  updated.
+- Tests: 6 regressions added (cleanup preservation with stderr-warning
+  assert, truncated-candidate merge parity, MQ refresh on unchanged and
+  moved placements, orphan MQ semantics, duplicate read-number rejection).
+  Suite 137 → 143. One batch-2 expectation deliberately updated: moved
+  tagged reads now carry a refreshed `MQ` (== adjusted mate MAPQ) instead
+  of no tag.
+- README: duplicate-read-number invariant, original-placement slot in
+  candidate discovery, the `MQ` exception in the adjusted-records
+  paragraph, commit-point behavior in the failure policy, test count.
+
+# Steps actually taken
+
+1. Plan written; all four findings re-verified via the evaluation turn's
+   reproduction script.
+2. Fixes applied (pipeline commit point + MQ, candidates slot, records
+   duplicate check); one batch-2 test updated to the new MQ policy; suite
+   green.
+3. Six regressions added; ruff format applied to two test files; full
+   gates re-run.
+4. Reproduction script re-run at the original bug sites: all four
+   behaviors corrected; benchmark re-measured.
+
+# Verification
+
+- `pixi run test`: 143 passed (was 137; +6 regressions).
+- Reproduction re-run: cleanup failure exits 0 with outputs present and
+  the leftover backup reported; the 444/452 pair merges at the original
+  placement (28M, MAPQ 3) with bam-only parity; `mapq=3 MQ=3`; duplicate
+  R1s exit 1 with no published output.
+- `pixi run lint` / `pixi run format`: clean.
+- Benchmark: 1 thread 7.8 s / 2,562 pairs/s / 225 MiB — ~3% below the
+  previous runs, consistent with the two added `MQ` writes per template
+  plus run variance; within the documented 2.6–4.2k range.
+
+# Risks encountered
+
+- None beyond the two confirmed design decisions (commit-point semantics;
+  set-not-remove `MQ`), both documented in README and the report.

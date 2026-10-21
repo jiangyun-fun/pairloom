@@ -1,0 +1,683 @@
+---
+title: "Third review-fix batch implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+None
+
+## fix
+
+### Post-commit backup cleanup failure destroyed committed outputs
+
+```
+level: high
+```
+
+#### reason
+
+High: permanent data loss. Backup removal ran inside the rollback scope, so
+a failed backup `unlink` after a fully successful publication triggered a
+full rollback — deleting the committed outputs and then failing to restore
+the already-deleted backups.
+
+#### description
+
+```
+type: text
+```
+
+1. The publish loop is followed by an explicit commit point: every
+   requested output is published and complete.
+2. Backup removal after that point is post-commit housekeeping: a failed
+   `unlink` collects the leftover `.pairloom-bak-*` paths and reports them
+   loudly on stderr; the committed outputs stay in place and the run exits
+   0.
+3. Failures during publication keep the existing backup/restore rollback
+   (unchanged, regression-tested in the previous batch).
+
+#### before
+
+```text
+second run (cleanup failure on 2nd backup) exit=1
+files after: ['d.parquet.pairloom-bak-…', 's.parquet.pairloom-bak-…']
+previous a.bam recoverable: False
+```
+
+#### after
+
+```text
+second run (cleanup failure on 2nd backup) exit=0
+files after: ['a.bam', 'd.parquet', 'd.parquet.pairloom-bak-…', 's.parquet']
+previous a.bam recoverable: True
+pairmerge: warning: could not remove backup file(s); delete them manually: …
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_errors.py::TestPublishIntegrity::test_backup_cleanup_failure_preserves_committed_outputs`
+(one-shot `os.unlink` failure on the `d.parquet` backup; asserts exit 0,
+all outputs present, the exact leftover backup, and the stderr warning).
+:::
+
+### Candidate truncation discarded the original BAM placement
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: truncation silently reduced the pair search's achievable overlap,
+changing merge outcomes versus BAM-only discovery for reads whose original
+placement fell beyond the candidate cap.
+
+#### description
+
+```
+type: text
+```
+
+When the leftmost cap-kept set does not contain the BAM's own placement,
+the last kept slot is reserved for it; the cap is still honored, the
+`truncated` flag and conservative MAPQ are untouched, and the leftmost
+slot (orphan normalization) never changes.
+
+#### before
+
+```text
+default discovery: unmerged pos=436 … insufficient_overlap (overlap 4)
+bam-only discovery: merged: 1                                (overlap 12)
+```
+
+#### after
+
+```text
+default discovery exit=0; merged: 1   (28M at 444, MAPQ 3)
+bam-only discovery exit=0; merged: 1  (parity)
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_integration.py::TestPairAwareOptimization::test_truncated_candidates_keep_original_placement`
+(20-base reads at 444/452 in the tandem repeat; asserts merge at the
+original placement with conservative MAPQ and parity with
+`--candidate-source bam`).
+:::
+
+### Stale MQ tags survived MAPQ-only adjustments
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: contradictory metadata — the reciprocal mate-MAPQ tag kept its
+input value while the record's own MAPQ was conservatively adjusted, for
+every unchanged repeat-ambiguous placement.
+
+#### description
+
+```
+type: text
+```
+
+1. `_sync_mate_fields` sets reciprocal `MQ` from the mates' adjusted
+   MAPQs after both placements are applied (covers unchanged placements
+   and cross-contig pairs).
+2. `_adjust_single` removes `MQ` on the mapped record of an orphan (mate
+   unmapped or absent), and refreshes it on the unmapped mate from the
+   mapped record's adjusted MAPQ.
+
+#### before
+
+```text
+pos=400 mapq=3 MQ=60    (both mates)
+```
+
+#### after
+
+```text
+pos=400 mapq=3 MQ=3     (both mates)
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regressions: `tests/test_candidates_mapq.py::TestMateMapqPolicy::test_mq_refreshed_when_only_mapq_changes`,
+`test_mq_follows_movement`;
+`tests/test_classify_policy.py::TestRecordPolicy::test_orphan_stale_mq_removed`.
+The batch-2 tagged-move test now pins `MQ == 3` (refreshed) instead of
+tag absence.
+:::
+
+### Duplicate primary read numbers bypassed pairing validation
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: silent record loss — the later duplicate overwrote the earlier in
+the processing slot, which was then tagged with a classification it never
+contributed to.
+
+#### description
+
+```
+type: text
+```
+
+`check_pair_flags` now counts read1/read2 slots across the template's
+primaries and raises `DataInvariantError` when either exceeds one,
+consistent with the existing more-than-two-primaries check.
+
+#### before
+
+```text
+adjust exit=0 (pairing invariant violation should fail loudly => 1)
+  pos=500 tags=['ZC']      <- never processed, still tagged
+  pos=600 tags=['ZC']
+```
+
+#### after
+
+```text
+adjust exit=1
+pairmerge: error: template 'dup' has duplicate primary read1/read2 records
+           (read1=2, read2=0); input violates pairing invariants
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_classify_policy.py::TestRecordPolicy::test_duplicate_primary_read_numbers_fail_loudly`
+(asserts exit 1 and no published output).
+:::
+
+## limitation
+
+### Post-commit cleanup failures leave litter
+
+```
+level: low
+```
+
+#### reason
+
+Low: the chosen trade-off keeps committed outputs at the cost of possible
+leftover backup files, which the warning names explicitly.
+
+#### description
+
+```
+type: text
+```
+
+A backup that cannot be unlinked after the commit point stays on disk
+until removed manually; PairLoom reports the exact paths on stderr.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Pinned by `test_backup_cleanup_failure_preserves_committed_outputs`
+(leftover list asserted exactly).
+:::
+
+## caveat
+
+### Two intentional behavior changes
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: user-visible semantic changes confirmed this session; recorded so
+downstream users are not surprised.
+
+#### description
+
+```
+type: text
+```
+
+1. `MQ` is now refreshed (or removed for unmapped/absent mates) even on
+   unchanged placements — a documented exception to the "unchanged records
+   keep their input tags" policy.
+2. Templates with duplicate primary read1/read2 records now fail loudly
+   (exit 1) instead of silently processing one record.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Both pinned by the regressions above; README states both rules (adjusted
+records paragraph, record policy bullet).
+:::
+
+## assumption
+
+None
+
+## conclusion
+
+### All four third-round findings are fixed and regression-pinned
+
+```
+level: high
+```
+
+#### reason
+
+High: the batch's outcome statement, backed by the full gate run and the
+unchanged reproduction sites.
+
+#### description
+
+```
+type: text
+```
+
+1. All four fixes landed as one batch, each pinned by a regression test
+   (6 new tests; suite 137 → 143 passing).
+2. The third-round reproduction script, re-run at the original bug sites,
+   shows every behavior corrected.
+3. Lint and format are clean; the benchmark stays within the documented
+   range (1 thread: 7.8 s, 2,562 pairs/s, 225 MiB — a ~3% delta consistent
+   with the two added `MQ` tag writes per template plus run variance).
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+pixi run test    -> 143 passed
+pixi run lint    -> All checks passed
+pixi run format  -> 29 files already formatted
+bench threads=1  -> 7.8 s, 2,562 pairs/s, peak RSS 225 MiB
+```
+:::
+
+## recommendation
+
+### M: Surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: improves cohort QC at modest effort; the data already exists on
+stderr.
+
+#### description
+
+```
+type: text
+```
+
+Treat the stderr merge-reason summary as pipeline telemetry in QC reports.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: advisory guard against the compatibility flag's designed overstatement.
+
+#### description
+
+```
+type: text
+```
+
+The compatibility flag overstates confidence by design; measure target
+repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: operational tuning advice from the measured scaling curve.
+
+#### description
+
+```
+type: text
+```
+
+Scaling flattens beyond four workers in the current benchmark.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the largest remaining documented limitation of candidate
+discovery.
+
+#### description
+
+```
+type: text
+```
+
+Extend candidate discovery beyond exact ungapped blocks, removing the
+documented limitation.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: requested extension that leaves the required schema untouched.
+
+#### description
+
+```
+type: text
+```
+
+Overlap-length distributions and merge-rejection reason counts, keeping
+the required read-stats schema unchanged.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: performance polish; current throughput already meets the target.
+
+#### description
+
+```
+type: text
+```
+
+Profile and reduce record serialization in the single-process path.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: project hardening; no user-facing behavior depends on it.
+
+#### description
+
+```
+type: text
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### Benchmark re-measured after the third fix batch
+
+```
+level: low
+```
+
+#### reason
+
+Low: routine re-measurement, recorded so the committed numbers stay
+honest.
+
+#### description
+
+```
+type: table
+```
+
+| Threads | Time | Throughput | Peak RSS |
+| ------- | ---- | ---------- | -------- |
+| 1 | 7.8 s | 2,562 pairs/s | 225 MiB |
+
+The single-thread figure sits ~3% below the previous runs (2,633–2,643
+pairs/s), consistent with the two added `MQ` tag writes per template plus
+observed run-to-run variance; still inside the README's documented
+2.6–4.2k range.
+
+#### evidence
+
+```
+level: high
+type: table
+```
+
+::: {.callout-note collapse="true"}
+`pixi run bench` output, 2026-10-21, after the third fix batch.
+:::
+
+## process
+
+### Reproduce, fix, re-verify at the same sites
+
+```
+status: right
+```
+
+#### description
+
+```
+type: text
+```
+
+1. All four findings reproduced end-to-end before any fix; none refuted;
+   two design decisions (commit-point semantics, set-not-remove `MQ`)
+   confirmed by the user before implementation.
+2. Implemented as one batch behind a written plan; every fix pinned by a
+   regression test derived from its reproduction.
+3. One batch-2 test expectation updated deliberately: moved tagged reads
+   now carry a refreshed `MQ` instead of none.
+4. Re-ran the unchanged reproduction script, the full suite, lint, format,
+   and the benchmark before committing.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Plan: `docs/plans/20261021-162107_review-fixes-3.plan.qmd`; reproduction
+script kept outside the repo (`/tmp/pairloom_review3_repro/repro.py`).
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mutation record for this batch, mirroring the reply's Changes
+block.
+
+#### description
+
+```
+type: text
+```
+
+- Updated: `src/pairloom/{pipeline,candidates,records}.py`
+- Updated: `tests/{test_errors,test_integration,test_candidates_mapq,test_classify_policy}.py`
+  (+6 tests, 143 total; 1 expectation updated)
+- Updated: `README.md`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`
+- Created: `docs/plans/20261021-162107_review-fixes-3.plan.qmd`, this report
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+  (includes the prior evaluation turn's pending entries)
+- Packages: none; Environments: none
+- Git: `fix:` commit (code, tests, README, benchmark results) and `docs:`
+  commit (plan/report, audit, rolling state) on `main`, not pushed
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git log --oneline` after the two commits; working tree clean.
+:::
+
+## other
+
+None
