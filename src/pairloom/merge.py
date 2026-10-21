@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pairloom.alignment import ACGT, ReadStructure, covers
 from pairloom.cigarops import CIGAR_D, CIGAR_I, CIGAR_M, CIGAR_S, normalize_cigar
 from pairloom.config import PairLoomConfig
-from pairloom.pairing import orientation_ok
+from pairloom.pairing import leftmost_is_read1, orientation_ok
 
 #: Documented quality of an unresolved conflicting base (policy ``quality``).
 UNRESOLVED_QUALITY = 2
@@ -129,7 +129,13 @@ def try_merge(
         return MergeFailure(REASON_SKIP)
     if struct1.tid != struct2.tid:
         return MergeFailure(REASON_CONTIG)
-    left_is_read1 = struct1.start0 <= struct2.start0
+    left_is_read1 = leftmost_is_read1(
+        struct1.start0,
+        struct2.start0,
+        struct1.is_reverse,
+        struct2.is_reverse,
+        cfg.library_orientation,
+    )
     if not orientation_ok(
         struct1.is_reverse, struct2.is_reverse, left_is_read1, cfg.library_orientation
     ):

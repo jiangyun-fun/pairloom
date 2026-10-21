@@ -57,6 +57,23 @@ def orientation_ok(rev1: bool, rev2: bool, left_is_read1: bool, model: str) -> b
     raise ValueError(f"unknown library orientation model {model!r}")
 
 
+def leftmost_is_read1(pos1: int, pos2: int, rev1: bool, rev2: bool, model: str) -> bool:
+    """Decide which mate counts as 'leftmost' for orientation checks.
+
+    Distinct starts: the earlier start wins. Equal starts: the orientation
+    model decides (``fr``: the forward mate is leftmost; ``rf``: the
+    reverse mate; otherwise read1), so read numbering alone can never
+    accept or reject a colocated pair.
+    """
+    if pos1 != pos2:
+        return pos1 < pos2
+    if model == "fr":
+        return not rev1
+    if model == "rf":
+        return rev1
+    return True
+
+
 def overlap_len(p1: Placement, p2: Placement) -> int:
     return max(0, min(p1.end0, p2.end0) - max(p1.pos0, p2.pos0))
 
@@ -85,7 +102,7 @@ def select_pair(
             if p1.tid != p2.tid:
                 continue
             evaluated += 1
-            left_is_read1 = p1.pos0 <= p2.pos0
+            left_is_read1 = leftmost_is_read1(p1.pos0, p2.pos0, rev1, rev2, cfg.library_orientation)
             if not orientation_ok(rev1, rev2, left_is_read1, cfg.library_orientation):
                 continue
             if not fragment_ok(p1, p2, cfg):

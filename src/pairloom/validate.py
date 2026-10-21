@@ -82,7 +82,10 @@ def _check_distinct_outputs(cfg: PairLoomConfig, outputs: dict[str, Path]) -> No
     resolved: dict[str, str] = {}
     existing = [cfg.input_path, cfg.reference_path, Path(str(cfg.reference_path) + ".fai")]
     for role, path in outputs.items():
-        norm = os.path.normpath(os.path.abspath(path))
+        # realpath resolves parent-directory symlinks even when the final
+        # component does not exist yet, so aliased directories cannot route
+        # two outputs (or an output and an input) to one physical file.
+        norm = os.path.realpath(path)
         for other_role, other_norm in resolved.items():
             if norm == other_norm:
                 raise ConfigurationError(
@@ -91,7 +94,7 @@ def _check_distinct_outputs(cfg: PairLoomConfig, outputs: dict[str, Path]) -> No
                 )
         resolved[role] = norm
         for src in existing:
-            src_norm = os.path.normpath(os.path.abspath(src))
+            src_norm = os.path.realpath(src)
             if norm == src_norm:
                 raise ConfigurationError(f"{role} output {path} would overwrite input {src}")
     # samefile() also catches hardlinks and symlinks among existing paths.

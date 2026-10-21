@@ -159,6 +159,26 @@ class TestOuterSoftClips:
         assert rec.query_sequence == ref[UNIQUE : UNIQUE + 40] + "NNN"
 
 
+class TestColocatedOrientationTie:
+    def test_orientation_tie_independent_of_read_number(self, fx) -> None:
+        """Colocated mates: strand geometry, not read numbering, decides.
+
+        The same physical pair (one forward, one reverse, identical
+        coordinates) merges under fr regardless of which mate is read1.
+        """
+        for r1_fwd in (True, False):
+            name = "tief" if r1_fwd else "tier"
+            pair = fx.pair(name, UNIQUE, UNIQUE, read_len=20, r1_fwd=r1_fwd)
+            fx.write_bam_and_set(pair)
+            code, out = fx.run(mode="merge")
+            assert code == 0
+            merged = fx.read_bam(out["merged_bam"])
+            assert len(merged) == 1, r1_fwd
+            stats = fx.read_parquet(out["read_stats_parquet"])
+            by_type = dict(zip(stats["type"], stats["count"], strict=False))
+            assert by_type["mergeable"] == 1
+
+
 class TestMergedMapqPolicy:
     def test_merged_mapq_is_conservative_adjusted(self, fx) -> None:
         """The consensus MAPQ comes from the ADJUSTED values, not the input.
@@ -259,6 +279,55 @@ class TestOuterClipTies:
         rec = fx.read_bam(out["merged_bam"])[0]
         assert rec.cigarstring == "5S20M"
         assert rec.query_sequence == "NNNNN" + ref[UNIQUE : UNIQUE + 20]
+
+
+class TestEqualsShorthand:
+    def test_equals_seq_shorthand_resolved(self, fx) -> None:
+        """SAM '=' in SEQ means "identical to the reference" — expand it.
+
+        Before the fix the literal '=' characters dropped the masked
+        observations and degraded the consensus to N@Q2 everywhere (merged
+        NM=20 for a single true SNV).
+        """
+        import pyarrow.parquet as pq
+
+        ref = fx.ref_seqs["chr1"]
+        p = UNIQUE + 15
+        alt = {"A": "C", "C": "G", "G": "T", "T": "A"}[ref[p]]
+        r1 = fx.make_record(
+            "eq",
+            0x1 | 0x40 | 0x2,
+            UNIQUE,
+            "20M",
+            "=" * 15 + alt + "=" * 4,
+            mate_contig="chr1",
+            mate_pos=UNIQUE + 5,
+        )
+        r2 = fx.make_record(
+            "eq",
+            0x1 | 0x80 | 0x10 | 0x20 | 0x2,
+            UNIQUE + 5,
+            "20M",
+            ref[UNIQUE + 5 : UNIQUE + 25],
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        fx.write_bam_and_set([r1, r2])
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        # The masked positions now participate: full-depth statistics and a
+        # single true disagreement at the SNV.
+        rows = pq.read_table(str(out["disagreement_parquet"])).to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["pos"] == p + 1
+        assert rows[0]["alt"] == alt
+        assert rows[0]["dp"] == 2
+        rec = fx.read_bam(out["merged_bam"])[0]
+        expected_seq = ref[UNIQUE:p] + "N" + ref[p + 1 : UNIQUE + 25]
+        assert rec.query_sequence == expected_seq
+        tags = dict(rec.get_tags())
+        assert tags["NM"] == 1
+        assert tags["MD"] == f"15{ref[p]}9"
 
 
 class TestQualityModel:
@@ -410,6 +479,43 @@ class TestIndels:
         assert rec.query_sequence == r1_seq
         tags = dict(rec.get_tags())
         assert tags["NM"] == 3
+        assert tags["MD"] == "20"
+
+    def test_adjacent_insertion_ops_merge_all_bases(self, fx) -> None:
+        """Adjacent identical I ops (10M2I3I10M) must not lose bases.
+
+        The structure walk previously keyed insertions by boundary, so the
+        second op overwrote the first and the merged record carried 3 of
+        the 5 inserted bases.
+        """
+        ref = fx.ref_seqs["chr1"]
+        seq = ref[UNIQUE : UNIQUE + 10] + "GGA" + "CC" + ref[UNIQUE + 10 : UNIQUE + 20]
+        r1 = fx.make_record(
+            "ains",
+            0x1 | 0x40 | 0x2,
+            UNIQUE,
+            "10M2I3I10M",
+            seq,
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        r2 = fx.make_record(
+            "ains",
+            0x1 | 0x80 | 0x10 | 0x20 | 0x2,
+            UNIQUE,
+            "10M2I3I10M",
+            seq,
+            mate_contig="chr1",
+            mate_pos=UNIQUE,
+        )
+        fx.write_bam_and_set([r1, r2])
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        rec = fx.read_bam(out["merged_bam"])[0]
+        assert rec.cigarstring == "10M5I10M"
+        assert rec.query_sequence == seq
+        tags = dict(rec.get_tags())
+        assert tags["NM"] == 5
         assert tags["MD"] == "20"
 
     def test_conflicting_insertion_unmergeable(self, fx) -> None:

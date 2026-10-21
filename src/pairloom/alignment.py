@@ -23,7 +23,9 @@ from pairloom.cigarops import (
     CIGAR_N,
     CIGAR_S,
     QUERY_OPS,
+    REF_OPS,
     cigar_ref_len,
+    normalize_cigar,
     validate_cigar,
 )
 from pairloom.exceptions import DataInvariantError
@@ -208,6 +210,10 @@ def build_read_structure(record: object) -> ReadStructure:
     cigar = tuple(record.cigartuples or ())
     context = f"read {record.query_name}"
     validate_cigar(cigar, len(seq), context)
+    # Discovery normalizes the record CIGAR; the structure walk must see
+    # the same form: adjacent identical ops (e.g. 2I then 3I at one
+    # boundary) would otherwise collapse to the last write and lose bases.
+    cigar = normalize_cigar(cigar)
 
     is_reverse = record.is_reverse
     start0 = record.reference_start
@@ -279,3 +285,40 @@ def build_read_structure(record: object) -> ReadStructure:
 def covers(struct: ReadStructure, boundary: int) -> bool:
     """True when ``boundary`` lies within the read's aligned span [start0, end0]."""
     return struct.start0 <= boundary <= struct.end0
+
+
+def expand_reference_matches(record: object, contig: str, refcache: object) -> None:
+    """SAM ``=`` SEQ shorthand: replace aligned ``=`` bases with the reference base.
+
+    SAM permits ``=`` in SEQ to mean "identical to the reference";
+    PairLoom compares bases literally, so the shorthand is expanded before
+    discovery and structure building. No-op when the sequence carries no
+    ``=``. Positions without a reference counterpart (soft clips,
+    insertions) keep the literal character.
+    """
+    seq = record.query_sequence
+    if seq is None or "=" not in seq:
+        return
+    cigar = tuple(record.cigartuples or ())
+    start0 = record.reference_start
+    ref_seq = refcache.fetch(contig, start0, start0 + cigar_ref_len(cigar))
+    chars = list(seq)
+    qi = 0
+    ri = 0
+    for op, length in cigar:
+        if op in ALIGNED_OPS:
+            for k in range(length):
+                if chars[qi + k] == "=":
+                    chars[qi + k] = ref_seq[ri + k]
+            qi += length
+            ri += length
+        elif op in QUERY_OPS:
+            qi += length
+        elif op in REF_OPS:
+            ri += length
+    # pysam's query_sequence setter drops query_qualities; restore them
+    # explicitly (same length, so the assignment stays valid).
+    quals = record.query_qualities
+    record.query_sequence = "".join(chars)
+    if quals is not None:
+        record.query_qualities = quals

@@ -155,6 +155,23 @@ class TestPathValidation:
         out.mkdir()
         assert main(base_args(fx, out) + ["--status-tag", "TOOLONG"]) == 2
 
+    def test_symlinked_output_dirs_collide_rejected(self, one_pair_bam, fx, tmp_path) -> None:
+        """Two outputs reaching one physical file via a symlinked directory."""
+        import os
+
+        from pairloom.cli import main
+
+        out = tmp_path / "osym"
+        out.mkdir()
+        real = out / "real"
+        real.mkdir()
+        os.symlink(real, out / "alias")
+        args = base_args(fx, out)
+        args[args.index("--adjusted-bam") + 1] = str(real / "same")
+        args[args.index("--disagreement-parquet") + 1] = str(out / "alias" / "same")
+        assert main(args) == 2
+        assert not (real / "same").exists()
+
     def test_bad_compression_choice(self, one_pair_bam, fx, tmp_path) -> None:
         from pairloom.cli import main
 

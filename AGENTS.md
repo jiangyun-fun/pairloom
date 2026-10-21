@@ -13,7 +13,7 @@ through pixi so the workspace env — not the ambient PATH — supplies binaries
 | Task | Command |
 | ---- | ------- |
 | Set up env (conda deps + editable install) | `pixi install` |
-| Full test suite (147 tests) | `pixi run test` |
+| Full test suite (151 tests) | `pixi run test` |
 | Stop at first failure | `pixi run test-fast` |
 | Lint (ruff check) | `pixi run lint` |
 | Format check / apply | `pixi run format` / `pixi run format-fix` |
@@ -76,6 +76,11 @@ in `pyproject.toml`. If imports suddenly stop resolving, check for
    `PairLoomError`s with read/reference context.
 8. **Determinism**: output must be byte-identical across `--threads` counts.
    Keep statistics as integer aggregations and tie-breaks coordinate-based.
+9. **Record parsing edges**: normalize the record CIGAR before walking it
+   (adjacent identical ops share a boundary and would overwrite each other);
+   expand SAM `=` SEQ shorthand against the reference before scoring,
+   statistics, or merging (clipped/inserted `=` stays literal). Note:
+   pysam's `query_sequence` setter drops `query_qualities` — re-set them.
 
 ## Testing and regression discipline
 

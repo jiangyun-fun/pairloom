@@ -25,7 +25,7 @@ from typing import Any
 import pysam
 
 from pairloom import __version__
-from pairloom.alignment import Placement, build_read_structure
+from pairloom.alignment import Placement, build_read_structure, expand_reference_matches
 from pairloom.candidates import discover_candidates, normalize_record_cigar, single_read_leftmost
 from pairloom.cigarops import compute_md_nm
 from pairloom.classify import (
@@ -235,6 +235,10 @@ def _both_mapped(
         raise DataInvariantError(
             f"template {r1.query_name!r} has mapped records without reference id"
         )
+    # SAM '=' SEQ shorthand (base identical to the reference) is expanded
+    # before any scoring, statistics, or merging sees the record.
+    expand_reference_matches(r1, state.contig(tid1), state.refcache)
+    expand_reference_matches(r2, state.contig(tid2), state.refcache)
     cands1 = _discover(r1, state)
     cands2 = _discover(r2, state)
     # Eligibility filters (min_mapq/min_base_quality) apply to the ORIGINAL
@@ -369,6 +373,7 @@ def _adjust_single(record: Any, mate: Any | None, state: _WorkerState) -> None:
     """
     if record.flag & FLAG_UNMAPPED or record.reference_id < 0:
         return
+    expand_reference_matches(record, state.contig(record.reference_id), state.refcache)
     cands = _discover(record, state)
     placement = single_read_leftmost(cands)
     _apply_placement(record, placement, len(cands.placements), cands.truncated, state)

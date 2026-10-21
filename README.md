@@ -49,6 +49,8 @@ pairmerge --input input.bam --reference ref.fa --mode merge \
 
 Every output file has its own explicit path argument; no filename is ever
 inferred from a prefix or directory, and outputs never overwrite the inputs.
+Collision checks resolve symlinks, so aliased directories cannot route two
+outputs to one physical file.
 Existing output files are refused unless `--force` is given.
 
 ## Record policy
@@ -105,7 +107,10 @@ Candidate pairs are evaluated against the documented preference hierarchy:
 1. both mates on the same reference (candidates always are; cross-contig
    pairs therefore keep their BAM placements);
 2. library orientation (`--library-orientation`, default `fr`:
-   leftmost mate forward, rightmost reverse, by reference position) and
+   leftmost mate forward, rightmost reverse, by reference position; on
+   equal start coordinates the orientation model decides which mate counts
+   as leftmost — `fr`: the forward mate, `rf`: the reverse — so read
+   numbering alone never accepts or rejects a colocated pair) and
    fragment length within `--min-fragment-length`/`--max-fragment-length`
    (default 0–1000);
 3. combined alignment score: pairs scoring below
@@ -167,6 +172,9 @@ produce observations). Only A/C/G/T observations passing
 eligible; strand is taken from the actual alignment orientation. BAM SEQ
 is stored in reference orientation for both strands, so comparisons are
 strand-trivial and `adf`/`adr` count forward/reverse observations directly.
+SAM `=` SEQ shorthand (base identical to the reference) is expanded against
+the reference before analysis; `=` characters without a reference
+counterpart (soft clips, insertions) stay literal.
 
 Only positions where at least one eligible pair contains **different**
 overlapping nucleotides are reported. At a reported position, counts use
@@ -345,7 +353,7 @@ whole BAM is never loaded.
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (147 tests, all 35 spec scenarios)
+pixi run test          # full pytest suite (151 tests, all 35 spec scenarios)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark
