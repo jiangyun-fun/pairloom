@@ -500,3 +500,32 @@ Packages: none.
 Environments: none.
 
 Git: 2 conventional commits on `main` (fix: code/tests/README/AGENTS/benchmark; docs: plan-report pair, audit, rolling state), not pushed.
+
+## Refresh /tmp archive and tarball with fifth-batch commits
+
+```
+level: low
+date: 2026-10-21
+```
+
+### description
+
+Bring /tmp/pairloom-archive and the dated tarball under /tmp/archives/ up to date with the fifth fix batch and its docs commit, keeping the truncated-history rule and the existing rewritten commit hashes; repack the tarball.
+
+### result
+
+1. Implemented incremental refresh via fetch + cherry-pick: the archive now holds 11 commits (9bc3592..2b7b54a); earlier rewritten hashes unchanged.
+2. Answered: first attempt broke — the fix commit modifies AGENTS.md, whose creation commit was never archived (modify/delete conflict my guard missed); the mid-state was also mistakenly gc'd and tarred.
+3. Answered: recovered via cherry-pick --abort, re-fetch, handling both conflict types; the broken tarball was repacked from the verified state.
+4. Verified the archive tip tree equals the original main tree (37622bbe…); all original-history objects pruned; AGENTS.md present in the archive and the tarball.
+
+### change
+
+Files:
+- Updated (outside the repo): `/tmp/pairloom-archive/` (11 commits), `/tmp/archives/pairloom-archive-20261021.tar.gz` (repacked, 320 KB, 102 entries).
+
+Packages: None.
+
+Environments: none.
+
+Git: 1 commit in the project repo (this audit entry).
