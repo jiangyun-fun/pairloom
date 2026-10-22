@@ -1,0 +1,80 @@
+---
+title: "Truth-free controlled benchmark: fastp --merge vs bwa-mem2 + PairLoom on GO00009 S19 (plan)"
+author: "Yun Jiang"
+date: today
+---
+
+# Objective
+
+Implement the user-approved benchmark comparing `fastp --merge` against
+`bwa-mem2` + `pairloom` on the S19 GO00009 sample, per the 8-point protocol:
+reproducible 100k-pair pilot, shared preprocessing without overlap correction,
+qname join with orientation normalization, five-category agreement report with
+qualities compared separately, panel consistency and placement ambiguity as
+separate axes (no truth labels from unique mapping), mate-ambiguity strata with
+rescue successes vs refusals, representative-disagreement inspection with an
+unresolved category, a synthetic dataset with known originating fragments
+(AA/GG micro-case, duplicate references, sequencing errors, adjacent mates,
+uncovered gaps), and runtime/peak-memory measurement with a full-run estimate.
+
+# Scope
+
+1. New analysis workspace `/bioproj/analysis/default/20261022.bench_pairloom_vs_fastp.GO00009_S19/`
+   — its own git repo and pixi env (fastp, bwa-mem2, samtools, pysam, polars);
+   PairLoom runs from its repo env (binary path recorded).
+2. Sampling: reservoir sampling, seed 20261022, n=100,000 pairs from
+   `S10__prepare_pe_fq__ln/*.1/.2.fq.gz`; provenance records tool versions,
+   commands, parameters, seed, sha256.
+3. Shared preprocessing: fastp PE mode, overlap correction off (default),
+   defaults otherwise; both arms consume the same trimmed pair files.
+   Arm A: `fastp --merge` with adapter/quality/length filtering disabled
+   (pure merge; consensus correction inherent to merging, documented).
+   Arm B: `bwa-mem2 mem` (secondary alignments kept, no -M) →
+   `samtools sort -n` → `pairloom --mode merge` (defaults, `--threads 4`).
+   Arm A0 (separate end-to-end analysis): `fastp --merge` defaults on the raw
+   sample, S14-style.
+4. Join by qname (first whitespace token); fastp merged read revcomp'd when
+   the PairLoom merged record is reverse-strand. Categories: both-merged
+   identical / both-merged different / fastp only / PairLoom only / neither.
+   QUAL strings compared separately.
+5. Axes kept separate: sequence agreement (tool vs tool), panel consistency
+   (bwa-mem2 SE of each arm's merged sequences against the panel),
+   placement ambiguity (MAPQ classes), mate-ambiguity strata from the
+   pre-PairLoom BAM (both unique / one sub-20 / both sub-20 / unmapped),
+   PairLoom rescue successes (ZR:i:1) vs inferred refusals (unmerged +
+   sub-threshold mate; cross-checked against the stderr merge-reason counts).
+6. Disagreement inspection: deterministic 15 examples per bucket with original
+   reads, qualities, alignments, competing panel matches; auto-classified with
+   an explicit unresolved category.
+7. Synthetic dataset (deterministic seed): 200 bp contigs plus exact-duplicate
+   contigs; 70 bp reads; categories clean / 1-2 substitution errors / adjacent
+   (0 overlap) / uncovered gap / duplicate-locus; AA-GG micro-case run through
+   PairLoom directly (2 bp reads are outside fastp and bwa-mem2 scope —
+   documented as an architectural difference). Sequence correctness and
+   placement correctness scored separately.
+8. Timing: GNU time -v per stage; full-run extrapolation scaled by the
+   61.16x pair ratio with the pilot's rescue share; full run launched in the
+   background if the estimate is practical.
+
+# Risks
+
+- fastp may alter merged read names (suffixes) — verify empirically before the
+  join; normalize qnames to the first whitespace token.
+- bwa-mem2 mem may soft-clip short mates; synthetic reads set to 70 bp to stay
+  in the mem algorithm's range.
+- Per-template PairLoom refusal reasons exist only as stderr aggregates;
+  per-pair refusal classes are inferred and cross-checked against aggregates.
+- Secondary alignments in the pre-PairLoom BAM must not be dropped (no -M,
+  no filtering) or the ambiguity strata lose their evidence.
+
+# Verification
+
+1. Pilot counts reconcile: sampled pairs = prep survivors + prep-filtered;
+   arm A merged + unmerged = prep pairs; arm B merged + unmerged templates =
+   prep pairs (within bwa-mem2 unmapped handling).
+2. Resampling with the same seed reproduces byte-identical sample files.
+3. Synthetic expectations: clean and error categories merge in both arms with
+   correct sequences; adjacent merges only in arm B; gap merges in neither;
+   duplicate loci merge in arm A but refuse or place ambiguously in arm B;
+   AA/GG micro-case rescues to seq1 with ZR:i:1.
+4. Timing table complete for every stage with wall time and peak RSS.
