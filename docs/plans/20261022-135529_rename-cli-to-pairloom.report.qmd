@@ -1,0 +1,589 @@
+---
+title: "CLI rename from pairmerge to pairloom — report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+### CLI executable renamed from pairmerge to pairloom
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: a user-visible surface change (command name, message prefixes, BAM
+program headers) with repo-wide but mechanical scope, executed at the
+user's explicit instruction and without keeping an alias.
+
+#### description
+
+```
+type: text
+```
+
+1. `pyproject.toml` `[project.scripts]` now maps `pairloom` (was
+   `pairmerge`) to `pairloom.cli:main`.
+2. `src/pairloom/cli.py` uses `prog="pairloom"`; every note, warning, and
+   error prefix reads `pairloom:`.
+3. `src/pairloom/pipeline.py` stderr prefixes and the `@PG` header records
+   (`ID`/`PN`/`CL`) use `pairloom`, so the done-line, backup warnings, and
+   BAM provenance all carry the new name.
+4. Tests, README, AGENTS.md, the pixi `cli` task, and
+   `data/synthetic/EXPECTED.md` follow; the pixi env was refreshed so the
+   console script exists only under the new name.
+
+#### before
+
+```text
+pyproject.toml: pairmerge = "pairloom.cli:main"
+prog="pairmerge"; stderr "pairmerge: done. ..." / "pairmerge: error: ..."
+BAM @PG: ID:pairmerge PN:pairmerge CL:pairmerge mode=...
+pairmerge --version -> "pairmerge 0.1.0"
+```
+
+#### after
+
+```text
+pyproject.toml: pairloom = "pairloom.cli:main"
+prog="pairloom"; stderr "pairloom: done. ..." / "pairloom: error: ..."
+BAM @PG: ID:pairloom PN:pairloom CL:pairloom mode=...
+pairloom --version -> "pairloom 0.1.0"
+shutil.which("pairmerge") -> None in the pixi env
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+pixi install -> default env installed
+which("pairloom") -> .pixi/envs/default/bin/pairloom
+which("pairmerge") -> None
+pairloom --version -> pairloom 0.1.0
+regeneration stderr -> "pairloom: done. total=5, ... merge-reasons={'fragment_gap': 1}"
+git grep pairmerge (excluding docs/plans, docs/misc) -> no matches
+```
+:::
+
+## fix
+
+None
+
+## limitation
+
+None
+
+## caveat
+
+### BAM outputs change at the byte level via the @PG header
+
+```
+level: low
+```
+
+#### reason
+
+Low: intended provenance change, but anyone byte-diffing outputs across
+versions will see it and should know why.
+
+#### description
+
+```
+type: text
+```
+
+Every BAM PairLoom writes now embeds `@PG ID:pairloom PN:pairloom`. The
+committed synthetic expected BAMs were regenerated in the same change;
+only those `@PG` bytes differ (each file grew by 2 bytes under BGZF).
+Parquet outputs carry no program record and are unchanged.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git diff --stat data/synthetic/`: expected_merged.bam 384 -> 386 bytes,
+expected_unmerged.bam 475 -> 477 bytes, EXPECTED.md 1 line; the two
+parquet files absent from the diff.
+:::
+
+## assumption
+
+None
+
+## conclusion
+
+### Rename complete; full gate green; history preserved
+
+```
+level: high
+```
+
+#### reason
+
+High: the batch's outcome statement, backed by the gate run and the
+tracked-source sweep.
+
+#### description
+
+```
+type: table
+```
+
+| Gate | Result |
+| --- | --- |
+| `pixi run test` | 182 passed |
+| `pixi run lint` / `pixi run format` | clean |
+| `pairloom` / `pairmerge` in pixi env | present / absent |
+| Tracked sources (`git grep pairmerge`, excluding docs history) | no matches |
+| Synthetic expected outputs | regenerated; only `@PG` bytes differ |
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+182 passed in 11.02s
+ruff check: All checks passed!
+ruff format --check: 31 files already formatted
+```
+:::
+
+## recommendation
+
+### M: Surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: improves cohort QC at modest effort; the data already exists on
+stderr.
+
+#### description
+
+```
+type: text
+```
+
+Treat the stderr merge-reason summary as pipeline telemetry in QC reports.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Measure joint-rescue cost on low-MAPQ-heavy cohorts before scaling
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: still linear per unique-locus template.
+
+#### description
+
+```
+type: text
+```
+
+Sample-measure rescue cost on large references; `--no-rescue` opts out.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: advisory guard against the compatibility flag's designed
+overstatement.
+
+#### description
+
+```
+type: text
+```
+
+Measure target-reference repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: operational tuning advice from the measured scaling curve.
+
+#### description
+
+```
+type: text
+```
+
+Scaling flattens beyond four workers.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the largest remaining documented limitation of candidate
+discovery.
+
+#### description
+
+```
+type: text
+```
+
+Extend discovery beyond exact ungapped blocks.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Batch the rescue reference search with a multi-pattern index
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: unique-locus rescues still scan the whole reference per template.
+
+#### description
+
+```
+type: text
+```
+
+Aho-Corasick-style batching per work chunk so one reference pass serves
+all pending rescue blocks.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: requested extension that leaves the required schema untouched.
+
+#### description
+
+```
+type: text
+```
+
+Overlap-length distributions and merge-rejection reason counts.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Build a calibrated joint-MAPQ model for rescued pairs
+
+```
+level: low
+```
+
+#### reason
+
+Low: replaces the deliberately flat MAPQ 0 once a model exists.
+
+#### description
+
+```
+type: text
+```
+
+Derive joint confidence from the search instead of a constant.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: performance polish; current throughput meets the target.
+
+#### description
+
+```
+type: text
+```
+
+Profile and reduce record serialization in the single-process path.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: project hardening; no user-facing behavior depends on it.
+
+#### description
+
+```
+type: text
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### Historical records keep the pairmerge name by design
+
+```
+level: low
+```
+
+#### reason
+
+Low: prevents a future reader from "fixing" accurate history.
+
+#### description
+
+```
+type: text
+```
+
+Entries under `docs/plans/` and `docs/misc/requirements_audit.qmd` that
+predate the rename keep the name that was true when they were written;
+they are records, not living documentation. The README and AGENTS.md are
+the living surface and now say `pairloom`.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git grep -c pairmerge -- docs/plans docs/misc` returns hits only in
+historical plan/report and audit records.
+:::
+
+## process
+
+### Plan, mechanical rename, regenerate artifacts, gate, two-commit split
+
+```
+status: right
+```
+
+#### description
+
+```
+type: text
+```
+
+1. Plan written before any edit; the `@PG` embed in the committed
+   expected BAMs was identified up front, so regeneration was a planned
+   step, not a post-gate surprise.
+2. Rename applied mechanically across entry point, CLI, pipeline, tests,
+   docs, and task definitions; `pixi install` refreshed the console
+   script; expected outputs regenerated with the new binary.
+3. Full gate run (182 tests, lint, format) and a tracked-source sweep
+   (`git grep`) closed the loop; the stale project memory was corrected.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Plan: `docs/plans/20261022-135220_rename-cli-to-pairloom.plan.qmd`
+(as executed); one mismatched Edit string was re-located by grep and
+fixed before the gate run.
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mutation record for this batch, mirroring the reply's
+Changes block.
+
+#### description
+
+```
+type: text
+```
+
+- Updated: `pyproject.toml`, `src/pairloom/{cli,pipeline}.py`,
+  `tests/{test_cli,conftest}.py`, `README.md`, `AGENTS.md`, `pixi.toml`,
+  `data/synthetic/{EXPECTED.md,expected_merged.bam,expected_unmerged.bam}`
+- Created: `docs/plans/20261022-135220_rename-cli-to-pairloom.plan.qmd`,
+  this report
+- Updated: `docs/misc/requirements_audit.qmd` (this entry)
+- Packages: none; Environments: pixi default env refreshed in place
+  (`pixi install` regenerated the console script)
+- Git: `feat:` commit (rename + regenerated outputs) and `docs:` commit
+  (plan/report, audit) on `main`, not pushed
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git log --oneline` after both commits; working tree clean.
+:::
+
+## other
+
+None

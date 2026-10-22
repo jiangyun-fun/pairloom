@@ -1,0 +1,50 @@
+---
+title: "Rename the CLI executable from pairmerge to pairloom (as executed)"
+author: "Yun Jiang"
+date: today
+---
+
+# Objective
+
+Replace the executable name `pairmerge` with `pairloom` everywhere the
+user-facing surface names the command, per the user's explicit instruction
+("use pairloom instead of pairmerge"). The Python package was already
+`pairloom`; only the console-script name, program identification, message
+prefixes, and documentation change. Historical records under `docs/plans/`
+keep the name that was true when they were written.
+
+# Scope
+
+1. `pyproject.toml` `[project.scripts]`: `pairmerge` -> `pairloom`.
+2. `src/pairloom/cli.py`: module docstring, `prog=`, note/warning/error
+   message prefixes.
+3. `src/pairloom/pipeline.py`: stderr summary/warning prefixes and the
+   `@PG` header records (ID/PN/CL) — a visible output change.
+4. `tests/test_cli.py` entry-point tests and `tests/conftest.py` docstring.
+5. `AGENTS.md`, `README.md`, `pixi.toml` `cli` task,
+   `data/synthetic/EXPECTED.md`.
+6. Regenerate `data/synthetic/expected_*` outputs: the committed BAMs embed
+   `@PG ID:pairmerge PN:pairmerge`, which changes with the rename.
+7. Refresh the pixi env (`pixi install`) so the console script is
+   regenerated under the new name.
+8. Update the project-overview memory to keep it truthful.
+
+# Risks
+
+- Stale `pairmerge` script lingering in the pixi env after the entry-point
+  change: verify with `shutil.which` both ways; reinstall if needed.
+- Tests asserting the old name or prefix: full suite run must stay green
+  (182 expected).
+- Byte-level output change of `@PG`-bearing BAMs is intended, not a
+  regression; the committed expected outputs are regenerated in the same
+  commit so the tree stays consistent.
+
+# Verification
+
+1. `pixi install`; `pairloom --help` and `pairloom --version` work;
+   `pairmerge` no longer resolves in the pixi env.
+2. `pixi run test` green (182), `pixi run lint` / `pixi run format` clean.
+3. Synthetic dataset regenerated; `git diff` on `data/synthetic/` shows
+   only the `@PG` rename and expected-content equality otherwise.
+4. `git grep pairmerge` over tracked sources returns hits only in
+   historical `docs/plans/` records.

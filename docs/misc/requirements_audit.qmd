@@ -758,3 +758,33 @@ Packages: None.
 Environments: none.
 
 Git: 1 docs commit, not pushed.
+
+## Rename the CLI from pairmerge to pairloom
+
+```
+level: medium
+date: 2026-10-22
+```
+
+### description
+
+Replace the executable name pairmerge with pairloom across the user-facing surface — console script, program identification, message prefixes, @PG header, docs, and committed synthetic outputs — per the user's explicit instruction, without keeping a pairmerge alias.
+
+### result
+
+1. Implemented: [project.scripts] entry, prog=, stderr prefixes, and @PG ID/PN/CL renamed; env refreshed (pairloom resolves, pairmerge gone).
+2. Implemented: tests, README, AGENTS.md, pixi.toml cli task, EXPECTED.md updated; synthetic expected BAMs regenerated (only @PG bytes changed).
+3. Verified: 182 tests pass, lint/format clean; git grep shows pairmerge only in historical docs/plans records; memory updated.
+
+### change
+
+Files:
+- Updated: `pyproject.toml`, `src/pairloom/{cli,pipeline}.py`, `tests/{test_cli,conftest}.py`, `README.md`, `AGENTS.md`, `pixi.toml`, `data/synthetic/{EXPECTED.md,expected_merged.bam,expected_unmerged.bam}`
+- Created: `docs/plans/20261022-135220_rename-cli-to-pairloom.plan.qmd`, `docs/plans/20261022-135529_rename-cli-to-pairloom.report.qmd`
+- Updated: `docs/misc/requirements_audit.qmd` (this entry)
+
+Packages: None.
+
+Environments: pixi default env refreshed in place.
+
+Git: 2 commits in the project repo (feat + docs), not pushed.
