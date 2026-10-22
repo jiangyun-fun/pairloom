@@ -8,9 +8,10 @@ author: "Yun Jiang"
 1. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
 2. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk) so genome-scale runs avoid the per-template linear scan.
 3. M: add a `--merge-stats-parquet` optional output with overlap-length distributions and merge-rejection reason counts.
-4. L: build a calibrated joint-MAPQ model for rescued pairs to replace the flat output MAPQ 0.
-5. L: profile and optimize the per-template SAM-string serialization in the single-process path.
-6. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke) with Dependabot.
+4. M: implement the truth-grounded fastp-vs-pairloom merge benchmark on the GO00009 S19 sample once the user approves the design.
+5. L: build a calibrated joint-MAPQ model for rescued pairs to replace the flat output MAPQ 0.
+6. L: profile and optimize the per-template SAM-string serialization in the single-process path.
+7. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke) with Dependabot.
 
 ## recommendation
 

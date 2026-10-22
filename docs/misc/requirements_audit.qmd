@@ -788,3 +788,24 @@ Packages: None.
 Environments: pixi default env refreshed in place.
 
 Git: 2 commits in the project repo (feat + docs), not pushed.
+
+## Evaluate the fastp-vs-pairloom merge benchmark proposal
+
+```
+level: medium
+date: 2026-10-22
+```
+
+### description
+
+Judge whether the user's two-arm comparison — fastp --merge on the S19 GO00009 fastqs versus fastp + bwa-mem2 + pairloom, with agreement counts and manual diagnosis of differences — is a good benchmark; implement it if good, otherwise give reasons and a better design.
+
+### result
+
+1. Answered: as stated it is an agreement study, not a benchmark — no ground truth, so better/valid/invalid has no objective criterion; confounds and the fastq-vs-BAM join are undefined.
+2. Answered: the GO00009 panel (21,839 oligos of 80 bp) provides per-pair truth; proposed a truth-grounded benchmark (truth annotation, two arms, join, validity/placement/accuracy metrics).
+3. Verified: dataset facts — 6.12M PE150 pairs, insert peak 80 bp, fastp merged 99.24%, pipeline minimap2 maps 99.03% of merged reads; implementation awaits user go-ahead.
+
+### change
+
+None (question turn; repo changes limited to this entry and the rolling-state item).
