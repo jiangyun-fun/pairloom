@@ -827,7 +827,7 @@ Implement the approved 8-point benchmark protocol — reproducible 100k-pair pil
 1. Implemented: analysis repo 20261022.bench_pairloom_vs_fastp.GO00009_S19 (pixi env, 9 scripts, git-tracked); pilot of 100k pairs, seed 20261022, run end to end with timing.
 2. Verified: pilot agreement 94.58% identical; 3.71% differ at 1-2 bases (equal-qual conflicts); fastp-only 1.53% concentrated on ambiguous loci; pairloom-only 0.05%.
 3. Verified: synthetic tier all expectations met (adjacent merges PairLoom-only; dup loci fastp-merges/PairLoom-refuses; gap merges in neither); AA/GG micro-cases rescue and refuse as designed.
-4. Launched: full 6.12M-pair run in the background (~45 min estimated) with a completion watcher; analysis to follow.
+4. Verified: full 6.12M-pair run completed in ~36 min; pilot shares held within 0.07 pp; PairLoom 32 min 18 s at 4 threads, 345 MB peak.
 
 ### change
 
