@@ -1,0 +1,73 @@
+---
+title: "Sixth review-fix batch implementation plan (as executed)"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+# Objective
+
+Apply the three verified sixth-round review findings as one fix batch,
+keeping the suite green and the documented policies in sync.
+
+# Verified findings (all reproduced before fixing)
+
+1. The occurrence scan collected the complete hit list of a
+   contig/probe before checking `--max-candidates-per-read` — 19,999
+   placements allocated on a 20 kb poly-A contig with cap 10, violating
+   the documented cap + 1 bound (P1, memory).
+2. The cross-contig rescue path relocated primaries of templates with
+   secondary records (relocation ran before any non-primary exclusion on
+   that path), leaving the secondary pointing at an abandoned locus (P2,
+   record consistency; same-contig path was already safe via merge-gate
+   ordering).
+3. FASTA contigs absent from the BAM header were skipped entirely, so an
+   off-header duplicate copy was invisible to the uniqueness claim (P2,
+   false uniqueness versus the whole-reference requirement).
+
+# Changes as executed
+
+- `src/pairloom/rescue.py`:
+  - `_scan_contig` is a generator; `_global_occurrences` checks the cap
+    after every occurrence and returns at cap + 1 — memory bounded
+    regardless of reference repetitiveness, and the scan stops instead
+    of finishing the contig.
+  - `_contig_keys`: header contigs keep their BAM tid; off-header FASTA
+    contigs get unique negative keys in reference order. Off-header
+    occurrences count toward ambiguity and the cap; the rescue decision
+    enumerates compatible pairs reference-wide, requires exactly one,
+    and requires it placeable (a unique off-header-only pair reports
+    `rescue_no_compatible_pair`, an off-header duplicate makes the pair
+    `rescue_ambiguous`).
+  - `rescue_eligible` gains `has_non_primary` — the exclusion now runs
+    before any search or record mutation on every path.
+- `src/pairloom/pipeline.py`: both rescue call sites pass
+  `has_non_primary=bool(others)`.
+- Tests (suite 172 → 176): bounded occurrence scan (`len == cap + 1`,
+  20 kb poly-A), off-header duplicate → `rescue_ambiguous`, unique
+  off-header-only pair → `rescue_no_compatible_pair`, cross-contig
+  secondary → nothing relocated; chunked-scan test asserts the generator
+  contract.
+- README + AGENTS.md invariant 10 updated: whole-reference ambiguity
+  scope, generator-bounded scan, before-search non-primary exclusion,
+  test count.
+
+# Verification
+
+- `pixi run test`: 176 passed; `pixi run lint` / `pixi run format`:
+  clean.
+- All three reproductions re-run at the original sites show the fixed
+  behavior (11 placements, originals kept with the secondary, duplicate
+  unmerged).
+- Rescue benchmark re-run (generator + contig-key mapping touch only the
+  rescue path): see the report's observation for numbers.

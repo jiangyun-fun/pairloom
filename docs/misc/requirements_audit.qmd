@@ -616,3 +616,35 @@ Packages: None.
 Environments: none.
 
 Git: 2 commits in the project repo (feat + docs), not pushed.
+
+## Evaluate sixth review and apply three fixes
+
+```
+level: high
+date: 2026-10-22
+```
+
+### description
+
+A sixth third-party review reported three findings against the new joint-rescue feature: an unbounded occurrence list under the candidate cap, cross-contig rescue relocating templates with secondary records, and off-header reference contigs being invisible to uniqueness. Evaluate under the standing protocol (reproduce, agree/refute, wait for approval), then implement the accepted batch.
+
+### result
+
+1. Answered: reproduced all three findings with a scratch script; agreed with all three, refuted only the hard-reject alternative for off-header contigs as disproportionate; implementation waited for the user's go-ahead.
+2. Fixed: occurrence scan is a generator bounded at cap + 1 (19,999 -> 11 placements on the 20 kb poly-A reproduction; rescue benchmark 32% faster with identical outputs).
+3. Fixed: non-primary exclusion enforced in rescue_eligible before any search or mutation on every path; cross-contig secondary templates keep their placements.
+4. Fixed: off-header FASTA contigs get synthetic negative contig keys, count toward ambiguity and the cap, and never host placements; off-header duplicates now yield rescue_ambiguous, off-header-only unique pairs rescue_no_compatible_pair.
+5. Verified: tests 172 -> 176, lint/format clean, all three reproductions re-run show corrected behavior; README and AGENTS.md invariant 10 updated.
+
+### change
+
+Files:
+- Updated: `src/pairloom/{rescue,pipeline}.py`, `tests/test_rescue.py` (+4 tests), `README.md`, `AGENTS.md`
+- Created: `docs/plans/20261022-113918_review-fixes-6.plan.qmd`, `docs/plans/20261022-114102_review-fixes-6.report.qmd`
+- Updated: `docs/misc/requirements_audit.qmd` (this entry)
+
+Packages: None.
+
+Environments: none.
+
+Git: 2 commits in the project repo (fix + docs), not pushed.

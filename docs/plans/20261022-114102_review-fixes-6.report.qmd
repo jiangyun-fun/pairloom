@@ -1,0 +1,651 @@
+---
+title: "Sixth review-fix batch implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+None
+
+## fix
+
+### Occurrence scan allocated the whole hit list before the cap check
+
+```
+level: high
+```
+
+#### reason
+
+High: silent memory growth proportional to reference repetitiveness, and
+a direct violation of the documented cap + 1 bound (README Performance,
+AGENTS.md bounded-memory constraint).
+
+#### description
+
+```
+type: text
+```
+
+`_scan_contig` is now a generator and `_global_occurrences` checks the
+cap after every occurrence, returning at cap + 1 — the scan also stops
+mid-contig instead of finishing it, which made the rescue benchmark 32%
+faster with byte-identical outputs.
+
+#### before
+
+```text
+20 kb poly-A contig, cap 10: _scan_contig allocated 19,999 hits;
+_global_occurrences returned 19,999 placements, truncated=True afterwards
+```
+
+#### after
+
+```text
+same input: 11 placements allocated, truncated=True; the generator is
+abandoned at the 11th hit and the contig scan never finishes
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_rescue.py::TestScanPrimitives::test_occurrence_scan_bounded_at_cap_plus_one`;
+the chunked-scan test now also pins the generator contract.
+:::
+
+### Cross-contig rescue relocated templates with secondary records
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: documented exclusion violated on one path; relocated primaries
+left the untouched secondary pointing at an abandoned locus.
+
+#### description
+
+```
+type: text
+```
+
+`rescue_eligible` takes `has_non_primary` and both call sites pass it, so
+the exclusion runs before any search or record mutation on every path —
+the cross-contig path previously reached relocation without any merge
+gate.
+
+#### before
+
+```text
+cross-contig MAPQ-0 pair + secondary: primaries moved to seq1 with ZR:i:1,
+reason non_primary_records; secondary kept seq2 with stale mate fields
+```
+
+#### after
+
+```text
+same input: primaries stay at seq2:0/seq1:2 without ZR, secondary
+untouched, reason different_contig
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regression: `tests/test_rescue.py::TestNonPrimaryGuard::test_cross_contig_secondary_blocks_rescue`.
+:::
+
+### Off-header reference contigs were invisible to uniqueness
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: false uniqueness — the requirement's negative case speaks of
+reference placements, and a duplicate copy outside the BAM header is one.
+
+#### description
+
+```
+type: text
+```
+
+`_contig_keys` gives header contigs their BAM tid and off-header FASTA
+contigs unique negative keys; occurrence scans cover every reference
+contig, off-header occurrences count toward ambiguity and the candidate
+cap, and the rescue decision requires exactly one compatible joint pair
+reference-wide that is also placeable. (The reviewer's alternative of
+hard-rejecting an incomplete reference dictionary was refuted: extra
+FASTA contigs are benign and common, and one rescue-eligible template
+would abort an otherwise valid run.)
+
+#### before
+
+```text
+FASTA {seq1=AACC, seq2=AATT, dup=AACC}, header without dup:
+merged seq1:1 AACC ZR:1 — rescued as unique
+```
+
+#### after
+
+```text
+same input: unmerged, rescue_ambiguous, originals kept, no ZR;
+a unique pair existing only off-header reports rescue_no_compatible_pair
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regressions: `TestOffHeaderContigs::test_fasta_only_duplicate_blocks_uniqueness`
+and `TestOffHeaderContigs::test_unique_off_header_pair_not_rescued`.
+:::
+
+## limitation
+
+None
+
+## caveat
+
+None
+
+## assumption
+
+None
+
+## conclusion
+
+### All three findings fixed, pinned, and benchmarked
+
+```
+level: high
+```
+
+#### reason
+
+High: the batch's outcome statement, backed by the full gate run and the
+unchanged reproduction inputs.
+
+#### description
+
+```
+type: table
+```
+
+| Gate | Result |
+| --- | --- |
+| `pixi run test` | 176 passed (was 172; +4 regressions) |
+| `pixi run lint` / `pixi run format` | clean |
+| Reproduction 1 (poly-A, cap 10) | 19,999 → 11 placements allocated |
+| Reproduction 2 (cross-contig + secondary) | nothing relocated, no `ZR`, reason `different_contig` |
+| Reproduction 3 (off-header duplicate) | unmerged, `rescue_ambiguous` |
+| Rescue benchmark (24,000 templates, 1 thread) | 52.0 s vs 76.1 s pre-fix (−32%), RSS 226 MiB, outputs byte-identical |
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+pixi run test    -> 176 passed
+pixi run lint    -> All checks passed
+pixi run format  -> 31 files already formatted
+merge-reasons={'fragment_gap': 9248, 'rescue_search_truncated': 2028}  (identical pre/post)
+[bench] threads=1: 52.0s, 461 pairs/s, peak RSS 226 MiB
+```
+:::
+
+## recommendation
+
+### M: Surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: improves cohort QC at modest effort; the data already exists on
+stderr.
+
+#### description
+
+```
+type: text
+```
+
+Treat the stderr merge-reason summary as pipeline telemetry in QC reports.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Measure joint-rescue cost on low-MAPQ-heavy cohorts before scaling
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: still linear per template despite the early-stop improvement.
+
+#### description
+
+```
+type: text
+```
+
+Sample-measure rescue cost on large references; `--no-rescue` opts out.
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Rescue benchmark: 52.0 s for 24,000 templates incl. 4,000 rescue
+templates (observation category).
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: advisory guard against the compatibility flag's designed
+overstatement.
+
+#### description
+
+```
+type: text
+```
+
+Measure target-reference repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: operational tuning advice from the measured scaling curve.
+
+#### description
+
+```
+type: text
+```
+
+Scaling flattens beyond four workers.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the largest remaining documented limitation of candidate
+discovery.
+
+#### description
+
+```
+type: text
+```
+
+Extend discovery beyond exact ungapped blocks.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Batch the rescue reference search with a multi-pattern index
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the early-stop fix removed the truncation-side scan waste, but
+unique-locus rescues still scan the whole reference per template.
+
+#### description
+
+```
+type: text
+```
+
+Aho-Corasick-style batching per work chunk so one reference pass serves
+all pending rescue blocks.
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Rescue benchmark observation below.
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: requested extension that leaves the required schema untouched.
+
+#### description
+
+```
+type: text
+```
+
+Overlap-length distributions and merge-rejection reason counts.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Build a calibrated joint-MAPQ model for rescued pairs
+
+```
+level: low
+```
+
+#### reason
+
+Low: replaces the deliberately flat MAPQ 0 once a model exists.
+
+#### description
+
+```
+type: text
+```
+
+Derive joint confidence from the search instead of a constant.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: performance polish; current throughput meets the target.
+
+#### description
+
+```
+type: text
+```
+
+Profile and reduce record serialization in the single-process path.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: project hardening; no user-facing behavior depends on it.
+
+#### description
+
+```
+type: text
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### Generator early-stop made rescue 32% faster, not just bounded
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: an unplanned but material improvement; recorded so future
+comparisons use the right baseline.
+
+#### description
+
+```
+type: table
+```
+
+| Run (24,000 templates, 2 Mbp reference, 1 thread) | Seconds | Peak RSS |
+| --- | --- | --- |
+| Pre-fix (list-collecting scan) | 76.1 | 225 MiB |
+| Post-fix (generator, cap + 1 early stop) | 52.0 | 226 MiB |
+
+Outputs are byte-identical between the two runs (same classification
+counts and merge reasons). The speedup comes from truncated searches
+abandoning the contig mid-scan instead of finishing it.
+
+#### evidence
+
+```
+level: high
+type: table
+```
+
+::: {.callout-note collapse="true"}
+`/tmp/plbench-rescue` (pre-fix) and `/tmp/plbench-rescue2` (post-fix);
+both directories kept outside the repo.
+:::
+
+## process
+
+### Reproduce, agree/refute, wait for approval, fix as one batch
+
+```
+status: right
+```
+
+#### description
+
+```
+type: text
+```
+
+1. All three findings reproduced with a scratch script before any code
+   change; agreement stated with evidence, one fix alternative refuted
+   (hard-rejecting incomplete reference dictionaries), and implementation
+   waited for the user's explicit go-ahead.
+2. Fixes applied as one batch; each finding pinned by a regression test
+   derived from its reproduction; all three reproductions re-run at the
+   original sites show the corrected behavior.
+3. Docs updated in the same change: README (search scope, bounded scan,
+   before-search non-primary exclusion, test count) and AGENTS.md
+   invariant 10.
+4. Rescue benchmark re-run — which surfaced the 32% improvement as a
+   side effect, with identical outputs verifying no behavior change.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Plan: `docs/plans/20261022-113918_review-fixes-6.plan.qmd`; reproduction
+scripts under `/tmp` (kept outside the repo).
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mutation record for this batch, mirroring the reply's Changes
+block.
+
+#### description
+
+```
+type: text
+```
+
+- Updated: `src/pairloom/{rescue,pipeline}.py`, `tests/test_rescue.py`
+  (+4 tests, 176 total), `README.md`, `AGENTS.md` (invariant 10, test
+  count)
+- Created: `docs/plans/20261022-113918_review-fixes-6.plan.qmd`, this
+  report
+- Updated: `docs/misc/requirements_audit.qmd` (includes the prior
+  evaluation turn's entry)
+- Packages: none; Environments: none
+- Git: `fix:` commit (code, tests, README/AGENTS) and `docs:` commit
+  (plan/report, audit) on `main`, not pushed
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git log --oneline` after the two commits; working tree clean.
+:::
+
+## other
+
+None
