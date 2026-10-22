@@ -705,3 +705,30 @@ Packages: None.
 Environments: none.
 
 Git: 1 docs commit, not pushed.
+
+## Trace default-parameter rescue of an AA/GG pair
+
+```
+level: low
+date: 2026-10-22
+```
+
+### description
+
+Explain, with default parameters, how a raw R1=AA / R2=GG FR pair is processed against seq1=AACC, seq2=AATT, seq3=CCTT — and verify the answer against a live run, not memory.
+
+### result
+
+1. Answered: live run shows joint rescue to seq1 and a 4M consensus (POS 1, AACC, MAPQ 0, NM:0, MD:Z:4, ZR:i:1); outcome is invariant to the aligner's arbitrary primaries.
+2. Fixed: README claimed rescue_applied appears in the stderr merge-reason summary; code shows the summary lists unmerged templates only — wording corrected.
+
+### change
+
+Files:
+- Updated: `README.md` (rescue summary wording), `docs/misc/requirements_audit.qmd` (this entry)
+
+Packages: None.
+
+Environments: none.
+
+Git: 1 docs commit, not pushed.

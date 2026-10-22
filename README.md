@@ -135,12 +135,13 @@ rescues):
    counts as evidence of uniqueness — two equally supported placements
    leave the pair unmerged with reason `rescue_ambiguous`.
 
-Outcomes and rejection reasons surface in the stderr merge-reason summary
-(`rescue_applied` merges; `rescue_ambiguous`, `rescue_no_compatible_pair`,
-`rescue_search_truncated`, `rescue_unsupported_alignment` keep the original
-placements and records) and as the `ZR:i:1` tag on every record whose
-placement came from rescue (both mates in adjust mode, the consensus record
-in merge mode).
+Rescue failures surface in the stderr merge-reason summary
+(`rescue_ambiguous`, `rescue_no_compatible_pair`, `rescue_search_truncated`,
+`rescue_unsupported_alignment` — those templates keep their original
+placements and records). Successful rescues surface as the `ZR:i:1` tag on
+every record whose placement came from rescue (both mates in adjust mode,
+the consensus record in merge mode); merged templates never add a
+merge-reason row.
 
 Policy details:
 
