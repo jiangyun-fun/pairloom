@@ -1,0 +1,109 @@
+---
+title: "Joint cross-reference pair rescue and adjacent joining — implementation plan (as executed)"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+# Objective
+
+Implement (not propose) two default-on behaviors, with regression tests,
+documentation, and measurement:
+
+1. **Joint low-MAPQ pair rescue**: for both-mapped templates that fail
+   merging for a placement-level reason with at least one mate below the
+   original-MAPQ gate, search the whole reference (every BAM-header
+   contig, both strands) for the mates' exact ungapped blocks and
+   relocate/merge only on a unique compatible joint placement with a
+   complete search.
+2. **Adjacent joining**: `--min-overlap` default 10 → 0, where 0 allows
+   joining mates that cover a continuous fragment with zero overlap.
+
+The spec's two-base examples (R1=AA, R2=GG, FR library, `seq1=AACC` with
+`AATT`/`CCTT`/duplicate-`AACC` decoys) must merge to `seq1:1 AACC 4M
+NM:0 MD:4` under default parameters with both original MAPQs 0.
+
+# Changes as executed
+
+- `src/pairloom/rescue.py` (new): `RescuePlacement`, global occurrence
+  scan (chunked 1 Mbp fetches, early abort at the cap, strand probes
+  derived from the raw read sequence), joint compatible-pair enumeration
+  under the shared orientation/fragment constraints with the
+  `--max-pair-evaluations` budget, and the five outcome statuses.
+- `src/pairloom/pipeline.py`: rescue hook at both failure sites of
+  `_both_mapped` (cross-contig early return and `try_merge` failure),
+  `_relocate_record` (strand flip: revcomp SEQ, reversed QUAL, reversed
+  CIGAR ops; flags, NM/MD, stale tags, MAPQ 0, `ZR:i:1`), 0x20
+  mate-strand sync on relocation only, merged-record rescue tag.
+- `src/pairloom/merge.py`: `rescue_bypass_mapq` parameter bypassing only
+  the original-MAPQ gate; `src/pairloom/classify.py`:
+  `assign_rescue_tag` with fail-loud collision policy;
+  `src/pairloom/config.py`: `min_overlap` default 0 (validated ≥ 0),
+  `rescue_enabled` default on; `src/pairloom/cli.py`: `--no-rescue`,
+  updated help.
+- Tests: `tests/test_rescue.py` (21 tests) covering all 12 required
+  categories; suite 151 → 172.
+- Docs: README (rescue section, MAPQ/overlap policies, §15 defaults,
+  limitations, performance note), AGENTS.md (invariants 3, 5, new 10;
+  layout; test count), CLI help, regenerated synthetic dataset +
+  EXPECTED.md (`pair_far` reason now `fragment_gap`).
+- Benchmark: `--ambiguous-pairs` mode (default dataset byte-identical);
+  default run re-committed; same-load A/B vs stashed pre-change code;
+  rescue run measured separately.
+
+# Design decisions that held
+
+1. Uniqueness = exactly one compatible joint placement over complete
+   global lists; tie-breaks never count as evidence (duplicate-AACC case
+   stays `rescue_ambiguous`).
+2. Trigger: placement-level failure reasons only, plus the low-original-
+   MAPQ guard, so high-MAPQ chimeric pairs are never relocated.
+3. Rescued records and consensus carry output MAPQ 0; statistical
+   eligibility unchanged (rescued pairs contribute no observations —
+   guaranteed by the original-MAPQ gate, verified by a dedicated test).
+4. 0x20 mate-strand sync scoped to relocation only after an initial
+   always-sync broke a fixture-pinned expectation (input flags pass
+   through for unrescued pairs, as before).
+
+# Corrections during development
+
+1. The occurrence search's strand labels were initially inverted (the
+   stored block of a reverse-strand record marks its REVERSE placements;
+   the forward probe is the raw read). Caught by reproducing the spec
+   cases through the CLI before writing tests: case A found no pair and
+   case B merged to a bogus `GGTT` placement on `seq3`. Probes now derive
+   from the raw sequence; the duplicate case then correctly stays
+   ambiguous.
+2. Two test-fixture mistakes caught by running the tests: a
+   self-complementary dinucleotide (`CG`) in the statistics-exclusion
+   fixture made its pair genuinely two-compatible (ambiguous); and
+   overlapping planted probes in the chunked-scan test destroyed each
+   other. Both fixtures redesigned.
+
+# Verification
+
+- `pixi run test`: 172 passed; `pixi run lint` / `pixi run format`:
+  clean; samtools quickcheck on rescued outputs.
+- Spec cases reproduced end-to-end under default parameters, in merge
+  and adjust modes, across all valid ambiguous primary combinations.
+- Benchmarks (see the report's observation table): default 1t 9.3 s /
+  2,154 pairs/s; same-load A/B ≈ +5% (more full merge walks and
+  consensus records from default adjacency, not rescue); rescue cost
+  ≈17 ms/template on the 2 Mbp reference, RSS unchanged, identical
+  results across thread counts.
+
+# Risks encountered
+
+- The default overlap-floor change reclassifies 1–9 bp overlaps from
+  `insufficient_overlap` to merged, and the synthetic `pair_far` pair
+  now reports `fragment_gap`; both documented and outputs regenerated.

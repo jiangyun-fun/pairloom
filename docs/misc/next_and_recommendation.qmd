@@ -5,13 +5,16 @@ author: "Yun Jiang"
 
 ## next
 
-1. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment, removing the documented exact-block-only limitation.
-2. M: add a `--merge-stats-parquet` optional output with overlap-length distributions and merge-rejection reason counts while keeping the required read-stats schema unchanged.
-3. L: profile and optimize the per-template SAM-string serialization in the single-process path (candidates: record round-trip and to_string/fromstring).
-4. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke) with Dependabot.
+1. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
+2. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk) so genome-scale runs avoid the per-template linear scan.
+3. M: add a `--merge-stats-parquet` optional output with overlap-length distributions and merge-rejection reason counts.
+4. L: build a calibrated joint-MAPQ model for rescued pairs to replace the flat output MAPQ 0.
+5. L: profile and optimize the per-template SAM-string serialization in the single-process path.
+6. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke) with Dependabot.
 
 ## recommendation
 
-1. M: treat `stats.parquet` disagreement reasons as pipeline telemetry — surface the stderr merge-reason summary in downstream QC reports.
-2. L: before relying on `--force-mapq60-exact`, quantify the repeat content of the target reference; the compat flag overstates confidence by design.
-3. L: for very large cohorts, prefer `--threads 4` with `--chunk-size 256`; measured scaling flattens beyond four workers in the current benchmark.
+1. M: treat merge-reason summaries (now including `rescue_*` reasons) as pipeline telemetry in downstream QC reports.
+2. M: for low-MAPQ-heavy cohorts on large references, measure joint-rescue cost on a sample first; `--no-rescue` opts out.
+3. L: before relying on `--force-mapq60-exact`, quantify the repeat content of the target reference.
+4. L: for very large cohorts, prefer `--threads 4` with `--chunk-size 256`.

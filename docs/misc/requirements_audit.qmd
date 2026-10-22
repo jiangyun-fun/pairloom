@@ -585,3 +585,34 @@ Packages: None.
 Environments: none.
 
 Git: 1 commit in the project repo (this audit entry).
+
+## Implement joint pair rescue and adjacent joining
+
+```
+level: high
+date: 2026-10-22
+```
+
+### description
+
+Implement joint paired-read placement rescue across references and adjacent-read joining by default: MAPQ-0 pairs with a uniquely supported joint placement must relocate and merge; --min-overlap 0 must join adjacently; ambiguity, truncation, and explicit user gates must reject; SAM/BAM records must stay consistent through contig/strand changes. Implementation, regression tests, documentation, and measurement — not a design proposal.
+
+### result
+
+1. Implemented: joint low-MAPQ pair rescue (src/pairloom/rescue.py + pipeline hook) — global both-strand search of exact ungapped mate blocks, unique-compatible-pair rule, complete-search requirement, ZR:i:1 tagging, rescue rejection reasons.
+2. Implemented: adjacent joining via --min-overlap default 10 -> 0 (zero allows joining; one uncovered base still rejects; --min-overlap 1 rejects adjacency).
+3. Implemented: SAM/BAM correctness through rescue — strand flips revcomp SEQ/reverse QUAL/reverse CIGAR, flags/TLEN/mate fields/NM/MD refreshed, stats eligibility unchanged.
+4. Verified: 21 new tests covering all 12 required categories; suite 151 -> 172; lint/format clean; samtools quickcheck on rescued outputs.
+5. Measured: default bench 9.3 s / 2,154 pairs/s at 1 thread; same-load A/B +5% (default adjacency does more merging); rescue costs ~17 ms/template on a 2 Mbp reference, RSS unchanged, thread-count-invariant.
+
+### change
+
+Files:
+- Created: `src/pairloom/rescue.py`, `tests/test_rescue.py`, `docs/plans/20261022-102340_joint-rescue-adjacent-join.plan.qmd`, `docs/plans/20261022-110208_joint-rescue-adjacent-join.report.qmd`
+- Updated: `src/pairloom/{config,cli,merge,pipeline,classify}.py`, `README.md`, `AGENTS.md`, `benchmarks/benchmark.py`, `benchmarks/results/{RESULTS.md,benchmark.parquet}`, `data/synthetic/{EXPECTED.md,expected_disagreements.parquet,expected_merged.bam,expected_stats.parquet,expected_unmerged.bam,input.bam,ref.fa,ref.fa.fai}`, `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+
+Packages: None.
+
+Environments: none.
+
+Git: 2 commits in the project repo (feat + docs), not pushed.

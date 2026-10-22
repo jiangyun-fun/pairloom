@@ -1,0 +1,870 @@
+---
+title: "Joint cross-reference pair rescue and adjacent joining — implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+### Joint low-MAPQ pair rescue across references and strands
+
+```
+level: high
+```
+
+#### reason
+
+High: the core requested capability. Reads with several equally good
+alignments and MAPQ 0 carry no individual placement evidence, but their
+joint placement can be uniquely supported; results must not depend on the
+aligner's arbitrary primary picks.
+
+#### description
+
+```
+type: text
+```
+
+1. New `src/pairloom/rescue.py`. When a both-mapped template fails
+   merging for a placement-level reason (`mapq_below_min`,
+   `different_contig`, `orientation_incompatible`,
+   `fragment_length_out_of_bounds`) and at least one mate's ORIGINAL MAPQ
+   is below `--min-mapq`, both mates' exact ungapped aligned blocks are
+   searched over every BAM-header contig on both strands.
+2. The template relocates only when EXACTLY ONE compatible joint
+   placement exists (same contig, library orientation model, fragment
+   bounds) and the search is complete: neither mate's occurrence count
+   exceeded `--max-candidates-per-read` and pair enumeration did not
+   exhaust `--max-pair-evaluations`. Tie-breaks never count as evidence.
+3. Occurrence scans are chunked at 1 Mbp fetches (bounded memory on large
+   contigs) and abort early once the occurrence cap is exceeded. Strand
+   labels derive from the RAW read sequence: for a reverse-strand record
+   the forward probe is `revcomp(stored block)`.
+4. Relocation rewrites SEQ/QUAL/CIGAR into the new alignment orientation
+   (revcomp, reversed qualities, reversed CIGAR op order — clips swap
+   ends), refreshes 0x10/0x20/0x2, RNEXT/PNEXT, TLEN and reciprocal MQ,
+   recomputes NM/MD, removes stale scoring tags, keeps RG, sets output
+   MAPQ 0, and tags `ZR:i:1`.
+5. Outcomes surface as merge-rejection reasons (`rescue_applied`,
+   `rescue_ambiguous`, `rescue_no_compatible_pair`,
+   `rescue_search_truncated`, `rescue_unsupported_alignment`) in the
+   stderr summary. `--no-rescue` disables; `--candidate-source bam` never
+   rescues; templates with non-primary records and mismatch/indel mates
+   are never rescued.
+
+#### before
+
+```text
+both mates MAPQ 0, primaries on decoy contigs:
+  reason different_contig (or mapq_below_min), records kept as-is;
+  windowed sliding is same-contig/same-strand, so the uniquely
+  supported joint placement was undiscoverable
+```
+
+#### after
+
+```text
+same template: global both-strand search -> exactly one compatible
+  joint placement -> relocated to seq1, MAPQ 0, ZR:i:1, merged
+  AACC 4M NM:0 MD:4; duplicate AACC copy -> rescue_ambiguous, unmerged
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`tests/test_rescue.py` (21 tests): spec cases A/B across every valid
+ambiguous primary combination (including reverse-strand primaries) merge
+to `seq1 POS 1 AACC 4M NM:0 MD:4` under default parameters with both
+original MAPQs 0; duplicate-AACC stays unmerged (`rescue_ambiguous`);
+candidate cap and pair-evaluation budget each block uniqueness
+(`rescue_search_truncated`); rf-library strand flip carries clips through
+(`2S4M2S`, `NNAACCNN`); adjust-mode relocation refreshes TLEN/mate
+fields; BAM-only and `--no-rescue` preserve placements; high-MAPQ
+discordant pairs are never rescued.
+:::
+
+### Adjacent (zero-overlap) joining by default
+
+```
+level: high
+```
+
+#### reason
+
+High: the required joining semantics. Mates covering a continuous
+fragment must join without a minimum-overlap floor, while explicit user
+requirements (`--min-overlap 1`) still reject adjacency.
+
+#### description
+
+```
+type: text
+```
+
+`--min-overlap` default changes 10 → 0; zero explicitly allows adjacent
+joining. The merge walk already reconstructs the fragment reference
+position by position, so adjacent mates concatenate with each base's
+original quality and existing consensus rules apply wherever mates do
+overlap. One uncovered base still rejects (`fragment_gap`); no base or
+quality is synthesized; insertion/deletion conflict checks are unchanged.
+
+#### before
+
+```text
+adjacent mates (overlap 0): insufficient_overlap at the default floor of 10
+```
+
+#### after
+
+```text
+--min-overlap 0 (default):  merged seq1:1 AACC 4M quals [30,31,21,22]
+--min-overlap 1:            unmerged, reason insufficient_overlap (ZR set: rescue stood)
+gap of one base:            unmerged, reason fragment_gap
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`TestAdjacentJoining` pins the gap rejection, the explicit-`--min-overlap`
+rejection, and config validation (0 valid, negative rejected);
+`test_reference_oriented_qualities_concatenated` pins stored-orientation
+quality order including reversal after a strand flip. The full existing
+suite (151 → 172) stays green.
+:::
+
+## fix
+
+None
+
+## limitation
+
+### Rescue pays a linear reference scan per rescued mate
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: measurable and dominant at genome scale; documented with
+measured numbers and escape hatches rather than hidden.
+
+#### description
+
+```
+type: statistic
+```
+
+Each rescued mate costs one C-speed substring scan of the reference
+(chunked 1 Mbp fetches, early abort at the occurrence cap). Measured on
+the 2 Mbp benchmark reference: ≈17 ms per rescue template single-threaded
+(≈68 s for 4,000 both-MAPQ-0 templates). Memory stays bounded (peak RSS
+unchanged at 225 MiB). Batched multi-pattern indexing is future work.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Rescue benchmark: `--pairs 20000 --ambiguous-pairs 4000 --threads 1,4`
+(see the observation table).
+:::
+
+### Rescued records carry output MAPQ 0
+
+```
+level: low
+```
+
+#### reason
+
+Low: deliberately conservative first implementation, blessed by the
+spec; documented as policy.
+
+#### description
+
+```
+type: text
+```
+
+A unique joint placement is real evidence, but no calibrated joint-MAPQ
+model exists, so rescued records and their consensus carry MAPQ 0.
+Eligibility is independent of output MAPQ.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Pinned by `test_merged_record_exact_contract` (MAPQ 0, `ZR:i:1`).
+:::
+
+### Mismatch- or indel-bearing mates never rescue
+
+```
+level: low
+```
+
+#### reason
+
+Low: same restriction as windowed sliding, kept deliberately so rescue
+is never less conservative than the existing path.
+
+#### description
+
+```
+type: text
+```
+
+Rescue requires both mates' original alignments to be exact and ungapped
+(`rescue_unsupported_alignment` otherwise); gapped/inexact joint
+re-placement is future work shared with the sliding limitation.
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Exercised inside `TestDeterminism` (mutated mate →
+`rescue_unsupported_alignment` path) and by the pre-existing
+`test_low_mapq_excluded` behavior staying unchanged.
+:::
+
+## caveat
+
+### Default overlap floor change accepts 1–9 bp overlaps
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: a deliberate default change with broader effect; documented so
+users can restore stricter behavior explicitly.
+
+#### description
+
+```
+type: text
+```
+
+Pairs overlapping by 1–9 bases, previously rejected as
+`insufficient_overlap` at the default of 10, now merge by default. Each
+such merge corroborates only a few bases; raise `--min-overlap`
+explicitly for stricter evidence. The synthetic dataset's non-overlapping
+pair now reports `fragment_gap` instead of `insufficient_overlap` (the
+mates clear the overlap gate, then the walk meets the uncovered middle).
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+README (Consensus merging + §15 defaults), regenerated
+`data/synthetic/EXPECTED.md` and expected outputs;
+`test_non_overlapping_mates_kept_separate` and
+`test_fragment_gap_not_synthesized` stay green.
+:::
+
+### Rescued pairs are excluded from disagreement statistics
+
+```
+level: low
+```
+
+#### reason
+
+Low: a documented policy decision, not a silent side effect — rescued
+pairs merge but never add observations.
+
+#### description
+
+```
+type: text
+```
+
+Statistical eligibility keeps testing the ORIGINAL aligner MAPQ, which
+rescue bypasses only for merging; an eligible rescue always has a
+sub-threshold mate, so the disagreement population is unchanged.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`test_rescued_pairs_do_not_add_disagreement_observations`: a rescued
+overlapping pair at a position where a normal pair disagrees keeps
+`dp=2` (wrongly including the rescued pair would give 4).
+:::
+
+## assumption
+
+### Placement-level failures with a low-MAPQ mate indicate ambiguity, not chimeras
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the trigger guard encodes this read of the biology; it is the
+load-bearing assumption separating rescue from chimera masking.
+
+#### description
+
+```
+type: text
+```
+
+Rescue fires only when at least one mate's original MAPQ is below
+`--min-mapq`. High-MAPQ discordant pairs (both mates confidently placed
+but incompatible) are never relocated — their discordance is treated as
+evidence (structural variation, chimeras), consistent with the ordinary
+path keeping their placements.
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`test_high_mapq_discordant_pair_not_rescued` pins the guard; AGENTS.md
+invariant 10 records it.
+:::
+
+## conclusion
+
+### Both features implemented, pinned, and measured
+
+```
+level: high
+```
+
+#### reason
+
+High: the batch's outcome statement, backed by the full gate run, the
+spec-case reproductions, and measured benchmarks.
+
+#### description
+
+```
+type: table
+```
+
+| Gate | Result |
+| --- | --- |
+| `pixi run test` | 172 passed (was 151; +21 rescue/adjacency tests) |
+| `pixi run lint` / `pixi run format` | clean |
+| Spec cases A/B, default parameters | merged `seq1 POS 1 AACC 4M NM:0 MD:4`, both MAPQ 0 |
+| Duplicate-AACC negative | unmerged, `rescue_ambiguous`, originals kept |
+| Truncation negatives | `rescue_search_truncated` (cap and evaluation budget) |
+| Default benchmark (1t) | 9.3 s, 2,154 pairs/s (committed RESULTS.md) |
+| Same-load A/B vs pre-change (3×1t) | 8.3–8.5 s vs 7.9–8.1 s (≈5%: more full merge walks and consensus records from default adjacency) |
+| Rescue benchmark (4,000 both-MAPQ-0) | +68 s at 1 thread (≈17 ms/template on 2 Mbp), 28.5 s at 4 threads, RSS unchanged, byte-identical counts across threads |
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Gate outputs pasted in the process section; benchmark artifacts in
+`benchmarks/results/` (default run) and the observation table (rescue
+run, `/tmp/plbench-rescue`).
+:::
+
+## recommendation
+
+### M: Surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the stderr summary now carries `rescue_*` reasons — direct
+telemetry for multi-mapper-heavy cohorts.
+
+#### description
+
+```
+type: text
+```
+
+Treat the merge-reason summary as pipeline telemetry in QC reports.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Measure joint-rescue cost on low-MAPQ-heavy cohorts before scaling
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the linear scan cost is real (≈17 ms/template on 2 Mbp); at
+genome scale it multiplies by reference length.
+
+#### description
+
+```
+type: text
+```
+
+Sample-measure rescue cost on large references; `--no-rescue` opts out
+per run.
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Rescue benchmark numbers in the observation category.
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: advisory guard against the compatibility flag's designed
+overstatement.
+
+#### description
+
+```
+type: text
+```
+
+Measure target-reference repeat content before trusting the flag.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: operational tuning advice from the measured scaling curve.
+
+#### description
+
+```
+type: text
+```
+
+Scaling flattens beyond four workers; rescue also parallelizes (76 s →
+28.5 s at 4 threads).
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Default and rescue benchmark scaling tables.
+:::
+
+## next
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the largest remaining documented limitation of candidate
+discovery; rescue inherits it.
+
+#### description
+
+```
+type: text
+```
+
+Extend discovery (and rescue eligibility) beyond exact ungapped blocks.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Batch the rescue reference search with a multi-pattern index
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: removes the dominant rescue cost at genome scale; the current
+per-template scan measured ≈17 ms on 2 Mbp.
+
+#### description
+
+```
+type: text
+```
+
+Aho-Corasick-style batching per work chunk so one reference pass serves
+all pending rescue blocks.
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Rescue benchmark (observation category).
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: requested extension that leaves the required schema untouched.
+
+#### description
+
+```
+type: text
+```
+
+Overlap-length distributions and merge-rejection reason counts (now
+including `rescue_*` reasons).
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Build a calibrated joint-MAPQ model for rescued pairs
+
+```
+level: low
+```
+
+#### reason
+
+Low: replaces the deliberately flat MAPQ 0 once a model exists;
+correctness is not blocked.
+
+#### description
+
+```
+type: text
+```
+
+Derive joint confidence from the search (occurrence counts, pair
+geometry) instead of a constant.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: performance polish; current throughput meets the target.
+
+#### description
+
+```
+type: text
+```
+
+Profile and reduce record serialization in the single-process path.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: project hardening; no user-facing behavior depends on it.
+
+#### description
+
+```
+type: text
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### Benchmark: default path, same-load A/B, and rescue cost
+
+```
+level: high
+```
+
+#### reason
+
+High: the numbers the conclusions rest on, with their measurement
+context.
+
+#### description
+
+```
+type: table
+```
+
+| Measurement | Conditions | Result |
+| --- | --- | --- |
+| Default run (committed RESULTS.md) | 20,000 pairs, 2 Mbp ref, load avg ≈ 4.5 | 1t 9.3 s / 2,154 pps; 2t 5.6 s; 4t 4.1 s / 4,900 pps; RSS 225–260 MiB |
+| A/B pre-change (stashed) | same dataset, same load, 3 runs | 7.9 / 7.9 / 8.1 s (≈2,505 pps) |
+| A/B post-change | same dataset, same load, 3 runs | 8.5 / 8.5 / 8.3 s (≈2,380 pps) |
+| Rescue run, 1 thread | +4,000 both-MAPQ-0 templates | 76.1 s total (≈68 s attributable to rescue ≈ 17 ms/template) |
+| Rescue run, 4 threads | same | 28.5 s; classification and reasons byte-identical to 1 thread |
+
+The ≈5% default-path delta is adjacency working as designed: pairs with
+1–9 bp overlap now run full merge walks and emit consensus records
+instead of failing the cheap overlap gate. Rescue itself never fired
+(all benchmark normals are MAPQ 60).
+
+Rescue decomposition (1 thread): 2,028 templates aborted early on the
+occurrence cap inside repeat islands (`rescue_search_truncated`); ~1,972
+completed full scans, of which 1,004 merged and 968 rejected
+`fragment_gap` (insert > 200 bp leaves uncovered middle bases).
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+pairmerge: done. total=24000, mergeable=12278, ..., both_aligned=11276, ...
+merge-reasons={'fragment_gap': 9248, 'rescue_search_truncated': 2028}
+[bench] threads=1: 76.1s, 316 pairs/s, peak RSS 225 MiB
+[bench] threads=4: 28.5s, 843 pairs/s, peak RSS 260 MiB
+```
+Rescue run artifacts under `/tmp/plbench-rescue` (kept outside the
+repo, like earlier reproduction scripts).
+:::
+
+## process
+
+### Plan first; reproduce spec cases end-to-end; pin every behavior
+
+```
+status: right
+```
+
+#### description
+
+```
+type: text
+```
+
+1. Plan written before implementation; repository AGENTS.md and every
+   touched module read first.
+2. Spec cases A/B/duplicate/truncation reproduced through the CLI with a
+   scratch script BEFORE writing tests; this caught one real defect
+   early — the occurrence-search strand labels were inverted (the stored
+   block of a reverse-strand record marks its REVERSE placements), which
+   made case A fail and case B merge to a bogus `GGTT` placement.
+3. 21 new tests cover all 12 required regression categories with
+   fixture-derived exact expectations; samtools quickcheck validates
+   rescued BAMs.
+4. Default benchmark re-committed; a separate `--ambiguous-pairs`
+   benchmark mode added and measured; same-load A/B run against the
+   stashed pre-change code rather than assuming.
+5. Docs updated in the same change: README (rescue section, defaults,
+   policies, limitations), AGENTS.md invariants (3, 5, new 10), CLI help,
+   synthetic EXPECTED.md + regenerated outputs.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Plan: `docs/plans/20261022-102340_joint-rescue-adjacent-join.plan.qmd`;
+scratch reproduction under `/tmp` (dbg scripts kept outside the repo).
+
+```
+pixi run test    -> 172 passed
+pixi run lint    -> All checks passed
+pixi run format  -> 31 files already formatted
+```
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mutation record for this batch, mirroring the reply's
+Changes block.
+
+#### description
+
+```
+type: text
+```
+
+- Created: `src/pairloom/rescue.py`, `tests/test_rescue.py` (+21 tests,
+  172 total)
+- Updated: `src/pairloom/{config,cli,merge,pipeline,classify}.py`,
+  `README.md`, `AGENTS.md`, `benchmarks/benchmark.py`,
+  `benchmarks/results/{RESULTS.md,benchmark.parquet}`,
+  `data/synthetic/{EXPECTED.md,expected_*,input.bam,ref.fa*}`
+- Created: this report and the plan pair
+- Updated: `docs/misc/{next_and_recommendation,requirements_audit}.qmd`
+- Packages: none; Environments: none
+- Git: `feat:` commit (code, tests, docs, benchmark results) and `docs:`
+  commit (plan/report, audit, rolling state) on `main`, not pushed
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git log --oneline` after the two commits; working tree clean.
+:::
+
+## other
+
+None
