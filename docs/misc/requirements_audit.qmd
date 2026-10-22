@@ -599,11 +599,11 @@ Implement joint paired-read placement rescue across references and adjacent-read
 
 ### result
 
-1. Implemented: joint low-MAPQ pair rescue (src/pairloom/rescue.py + pipeline hook) — global both-strand search of exact ungapped mate blocks, unique-compatible-pair rule, complete-search requirement, ZR:i:1 tagging, rescue rejection reasons.
+1. Implemented: joint low-MAPQ pair rescue (rescue.py + pipeline hook): whole-reference both-strand search, unique-pair rule, untruncated-search requirement, ZR:i:1 tag, rescue rejection reasons.
 2. Implemented: adjacent joining via --min-overlap default 10 -> 0 (zero allows joining; one uncovered base still rejects; --min-overlap 1 rejects adjacency).
 3. Implemented: SAM/BAM correctness through rescue — strand flips revcomp SEQ/reverse QUAL/reverse CIGAR, flags/TLEN/mate fields/NM/MD refreshed, stats eligibility unchanged.
 4. Verified: 21 new tests covering all 12 required categories; suite 151 -> 172; lint/format clean; samtools quickcheck on rescued outputs.
-5. Measured: default bench 9.3 s / 2,154 pairs/s at 1 thread; same-load A/B +5% (default adjacency does more merging); rescue costs ~17 ms/template on a 2 Mbp reference, RSS unchanged, thread-count-invariant.
+5. Measured: default bench 9.3 s / 2,154 pairs/s (1 thread); adjacency A/B +5%; rescue ~17 ms/template on 2 Mbp, RSS unchanged, invariant across threads.
 
 ### change
 
@@ -630,10 +630,10 @@ A sixth third-party review reported three findings against the new joint-rescue 
 
 ### result
 
-1. Answered: reproduced all three findings with a scratch script; agreed with all three, refuted only the hard-reject alternative for off-header contigs as disproportionate; implementation waited for the user's go-ahead.
+1. Answered: reproduced all three findings before fixing; agreed with all three, refuting only the hard-reject alternative for off-header contigs; waited for the user's go-ahead.
 2. Fixed: occurrence scan is a generator bounded at cap + 1 (19,999 -> 11 placements on the 20 kb poly-A reproduction; rescue benchmark 32% faster with identical outputs).
 3. Fixed: non-primary exclusion enforced in rescue_eligible before any search or mutation on every path; cross-contig secondary templates keep their placements.
-4. Fixed: off-header FASTA contigs get synthetic negative contig keys, count toward ambiguity and the cap, and never host placements; off-header duplicates now yield rescue_ambiguous, off-header-only unique pairs rescue_no_compatible_pair.
+4. Fixed: off-header contigs get negative keys, count toward ambiguity and the cap, never host placements; duplicates yield rescue_ambiguous, unique-off-header pairs yield rescue_no_compatible_pair.
 5. Verified: tests 172 -> 176, lint/format clean, all three reproductions re-run show corrected behavior; README and AGENTS.md invariant 10 updated.
 
 ### change
@@ -662,8 +662,8 @@ A seventh third-party review reported two findings: cross-contig rescue bypassin
 
 ### result
 
-1. Answered: reproduced both findings with a scratch script; agreed with both, refuted the configurable-rescue-tag alternative in favor of a startup reservation, and extended finding 1 to the read-group-conflict gate of the same defect class; implementation waited for the user's go-ahead.
-2. Fixed: _rescue_shape_blocked checks non-primary records, hard clips, reference skips, missing qualities, and read-group conflicts before any rescue search or mutation on every path; blocked cross-contig templates keep their placements and report different_contig.
+1. Answered: reproduced both findings; agreed, refuted the configurable-tag alternative for startup reservation, extended finding 1 to the read-group gate of the same class; waited for go-ahead.
+2. Fixed: _rescue_shape_blocked checks non-primary, hard clips, N ops, missing qualities, and RG conflicts before any rescue search or mutation on every path; blocked templates keep their placements.
 3. Fixed: RESCUE_TAG/RESCUE_VALUE moved to config.py and ZR is reserved against --status-tag at validation (startup exit 2).
 4. Verified: tests 176 -> 182, lint/format clean, both reproductions corrected, standard rescue unaffected; benchmarks not re-run (both fixes are cold-path, reasoning in the plan).
 
@@ -679,3 +679,29 @@ Packages: None.
 Environments: none.
 
 Git: 2 commits in the project repo (fix + docs), not pushed.
+
+## Introduce how to use pairmerge
+
+```
+level: low
+date: 2026-10-22
+```
+
+### description
+
+Explain how to use the PairLoom tool (`pairmerge` CLI): setup, the two modes, outputs, the options that matter most, current default behaviors, operating guarantees, and a hands-on example — grounded in the README and CLI source.
+
+### result
+
+1. Answered: usage introduction — setup, the two modes and commands, output files, key options and defaults, rescue/adjacency defaults, exit codes, determinism, synthetic demo, and dev tasks.
+
+### change
+
+Files:
+- Updated: `docs/misc/requirements_audit.qmd` (this entry)
+
+Packages: None.
+
+Environments: none.
+
+Git: 1 docs commit, not pushed.
