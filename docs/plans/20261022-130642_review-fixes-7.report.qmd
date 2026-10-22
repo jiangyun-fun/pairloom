@@ -1,0 +1,575 @@
+---
+title: "Seventh review-fix batch implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+None
+
+## fix
+
+### Cross-contig rescue bypassed hard-clip and missing-quality exclusions
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: same defect class as the round-6 non-primary finding — shape-
+ineligible templates were relocated and tagged before the merge rejected
+them, an asymmetry against the same-contig path and a violation of the
+documented exclusion set.
+
+#### description
+
+```
+type: text
+```
+
+`_rescue_shape_blocked(r1, r2, others)` summarizes every placement-
+independent merge gate — non-primary records, hard clips (H ops),
+reference skips (N ops), missing qualities, conflicting read groups —
+and both rescue call sites pass it into `rescue_eligible` (parameter
+renamed from `has_non_primary`). Blocked templates keep their original
+placements on every path; on the cross-contig path they report
+`different_contig`, matching the round-6 secondary-record behavior. The
+read-group extension came from tracing the same class during review, not
+from the finding itself.
+
+#### before
+
+```text
+cross-contig MAPQ-0 pair, R1 = 1H2M: both mates moved to seq1 with ZR:i:1,
+then rejected hard_clipped_mate; same-contig equivalent never rescued
+quality-less R1: relocated with ZR:i:1, then rejected qualities_missing
+```
+
+#### after
+
+```text
+both cases: records stay at seq2:0 / seq1:2 without ZR, reason
+different_contig; same-contig parity unchanged (hard_clipped_mate)
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regressions: `TestShapeGate::test_cross_contig_hard_clip_not_relocated`,
+`test_cross_contig_missing_qualities_not_relocated`,
+`test_cross_contig_read_group_conflict_not_relocated`,
+`test_same_contig_parity_kept`.
+:::
+
+### --status-tag ZR validated but aborted the run at classification time
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: a configuration PairLoom itself accepts produced a mid-run abort
+(exit 1) instead of a startup usage error — the rescue marker `ZR:i:1`
+is an integer tag and `assign_status_tag` refuses non-string values.
+
+#### description
+
+```
+type: text
+```
+
+`RESCUE_TAG`/`RESCUE_VALUE` moved to `config.py` (classify already
+imports config, so validation can reference the constants without a
+cycle), and `--status-tag ZR` now raises a `ConfigurationError` naming
+the reservation — exit 2 at startup, before any input is read. The
+reviewer's alternative of a configurable rescue tag was refuted: the
+failing user needs an error, not a second knob, and user-data collisions
+with the fixed tag already fail loudly at record level.
+
+#### before
+
+```text
+pairmerge --status-tag ZR ...: validation passes; run aborts exit 1 at
+"read 'z' carries tag ZR with non-string value 1"
+```
+
+#### after
+
+```text
+exit 2 at startup: "status_tag 'ZR' is reserved for the joint-rescue
+marker (ZR:i:1); choose another --status-tag"
+```
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Regressions: `TestStatusTagReservation::test_status_tag_zr_rejected_at_validation`
+and `test_cli_rejects_status_tag_zr_before_processing`; the standard
+rescue example still merges under the default tag (scratch verification).
+:::
+
+## limitation
+
+None
+
+## caveat
+
+None
+
+## assumption
+
+None
+
+## conclusion
+
+### Both findings fixed and pinned; the exclusion class is closed
+
+```
+level: high
+```
+
+#### reason
+
+High: the batch's outcome statement, backed by the full gate run and the
+re-run reproductions.
+
+#### description
+
+```
+type: table
+```
+
+| Gate | Result |
+| --- | --- |
+| `pixi run test` | 182 passed (was 176; +6 regressions) |
+| `pixi run lint` / `pixi run format` | clean |
+| Reproduction 1 (hard clip / no qualities / RG conflict, cross-contig) | nothing relocated, no `ZR`, `different_contig` |
+| Reproduction 2 (`--status-tag ZR`) | exit 2 at startup with the reservation message |
+| Standard rescue example (default tag) | still merges `AACC 4M` |
+| Benchmarks | not re-run: both fixes are cold-path (eligibility predicate over loaded records; config validation) |
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+```
+pixi run test    -> 182 passed
+pixi run lint    -> All checks passed
+pixi run format  -> 31 files already formatted
+```
+:::
+
+## recommendation
+
+### M: Surface merge-reason summaries in downstream QC
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: improves cohort QC at modest effort; the data already exists on
+stderr.
+
+#### description
+
+```
+type: text
+```
+
+Treat the stderr merge-reason summary as pipeline telemetry in QC
+reports.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Measure joint-rescue cost on low-MAPQ-heavy cohorts before scaling
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: still linear per unique-locus template.
+
+#### description
+
+```
+type: text
+```
+
+Sample-measure rescue cost on large references; `--no-rescue` opts out.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: advisory guard against the compatibility flag's designed
+overstatement.
+
+#### description
+
+```
+type: text
+```
+
+Measure target-reference repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: operational tuning advice from the measured scaling curve.
+
+#### description
+
+```
+type: text
+```
+
+Scaling flattens beyond four workers.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the largest remaining documented limitation of candidate
+discovery.
+
+#### description
+
+```
+type: text
+```
+
+Extend discovery beyond exact ungapped blocks.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Batch the rescue reference search with a multi-pattern index
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: unique-locus rescues still scan the whole reference per
+template.
+
+#### description
+
+```
+type: text
+```
+
+Aho-Corasick-style batching per work chunk so one reference pass serves
+all pending rescue blocks.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: requested extension that leaves the required schema untouched.
+
+#### description
+
+```
+type: text
+```
+
+Overlap-length distributions and merge-rejection reason counts.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Build a calibrated joint-MAPQ model for rescued pairs
+
+```
+level: low
+```
+
+#### reason
+
+Low: replaces the deliberately flat MAPQ 0 once a model exists.
+
+#### description
+
+```
+type: text
+```
+
+Derive joint confidence from the search instead of a constant.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: performance polish; current throughput meets the target.
+
+#### description
+
+```
+type: text
+```
+
+Profile and reduce record serialization in the single-process path.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: project hardening; no user-facing behavior depends on it.
+
+#### description
+
+```
+type: text
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: text
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+None
+
+## process
+
+### Reproduce, agree/refute with one class extension, wait, fix as one batch
+
+```
+status: right
+```
+
+#### description
+
+```
+type: text
+```
+
+1. Both findings reproduced with a scratch script before any code
+   change; agreement stated with evidence, the configurability
+   alternative in finding 2 refuted, and finding 1 extended to the
+   read-group-conflict gate found by tracing the same defect class.
+2. Implementation waited for the user's explicit go-ahead; fixes applied
+   as one batch, each pinned by regressions derived from the
+   reproductions.
+3. Both reproductions re-run at the original sites show corrected
+   behavior; the standard rescue example verified unaffected.
+4. Benchmarks deliberately not re-run: both fixes are cold-path and the
+   reasoning is recorded in the plan.
+
+#### evidence
+
+```
+level: high
+type: text
+```
+
+::: {.callout-note collapse="true"}
+Plan: `docs/plans/20261022-130614_review-fixes-7.plan.qmd`; reproduction
+scripts under `/tmp` (kept outside the repo).
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mutation record for this batch, mirroring the reply's
+Changes block.
+
+#### description
+
+```
+type: text
+```
+
+- Updated: `src/pairloom/{config,classify,pipeline,rescue}.py`,
+  `tests/test_rescue.py` (+6 tests, 182 total), `README.md`,
+  `AGENTS.md` (invariant 10, test count)
+- Created: `docs/plans/20261022-130614_review-fixes-7.plan.qmd`, this
+  report
+- Updated: `docs/misc/requirements_audit.qmd` (includes the prior
+  evaluation turn's entry)
+- Packages: none; Environments: none
+- Git: `fix:` commit (code, tests, README/AGENTS) and `docs:` commit
+  (plan/report, audit) on `main`, not pushed
+
+#### evidence
+
+```
+level: medium
+type: text
+```
+
+::: {.callout-note collapse="true"}
+`git log --oneline` after the two commits; working tree clean.
+:::
+
+## other
+
+None

@@ -648,3 +648,34 @@ Packages: None.
 Environments: none.
 
 Git: 2 commits in the project repo (fix + docs), not pushed.
+
+## Evaluate seventh review and apply two fixes
+
+```
+level: high
+date: 2026-10-22
+```
+
+### description
+
+A seventh third-party review reported two findings: cross-contig rescue bypassing the hard-clip and missing-quality exclusions, and --status-tag ZR passing validation but aborting the run when rescue writes its integer marker. Evaluate under the standing protocol, then implement the accepted batch.
+
+### result
+
+1. Answered: reproduced both findings with a scratch script; agreed with both, refuted the configurable-rescue-tag alternative in favor of a startup reservation, and extended finding 1 to the read-group-conflict gate of the same defect class; implementation waited for the user's go-ahead.
+2. Fixed: _rescue_shape_blocked checks non-primary records, hard clips, reference skips, missing qualities, and read-group conflicts before any rescue search or mutation on every path; blocked cross-contig templates keep their placements and report different_contig.
+3. Fixed: RESCUE_TAG/RESCUE_VALUE moved to config.py and ZR is reserved against --status-tag at validation (startup exit 2).
+4. Verified: tests 176 -> 182, lint/format clean, both reproductions corrected, standard rescue unaffected; benchmarks not re-run (both fixes are cold-path, reasoning in the plan).
+
+### change
+
+Files:
+- Updated: `src/pairloom/{config,classify,pipeline,rescue}.py`, `tests/test_rescue.py` (+6 tests), `README.md`, `AGENTS.md`
+- Created: `docs/plans/20261022-130614_review-fixes-7.plan.qmd`, `docs/plans/20261022-130642_review-fixes-7.report.qmd`
+- Updated: `docs/misc/requirements_audit.qmd` (this entry)
+
+Packages: None.
+
+Environments: none.
+
+Git: 2 commits in the project repo (fix + docs), not pushed.

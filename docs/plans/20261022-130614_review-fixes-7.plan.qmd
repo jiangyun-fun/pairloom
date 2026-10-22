@@ -1,0 +1,68 @@
+---
+title: "Seventh review-fix batch implementation plan (as executed)"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+# Objective
+
+Apply the two verified seventh-round review findings as one fix batch,
+closing the placement-independent-exclusion class completely and
+reserving the rescue tag at validation.
+
+# Verified findings (both reproduced before fixing)
+
+1. The cross-contig rescue path bypassed the hard-clip and
+   missing-quality gates (and, found while tracing, the read-group
+   conflict gate): relocation and `ZR` tagging happened before any merge
+   gate ran, then the merge rejected the pair — while the same-contig
+   equivalents never entered rescue (`try_merge` applies those gates
+   before its placement-level reasons). Same defect class as the round-6
+   non-primary finding, fixed incompletely.
+2. `--status-tag ZR` passed validation (ZR matches the generic two-char
+   pattern) and aborted the run with exit 1 at classification time: the
+   rescue marker `ZR:i:1` is an int, and `assign_status_tag` refuses
+   non-string values.
+
+# Changes as executed
+
+- `src/pairloom/pipeline.py`: `_rescue_shape_blocked(r1, r2, others)`
+  checks non-primary records, H/N CIGAR ops, missing qualities, and
+  conflicting read groups; both rescue call sites pass it into
+  `rescue_eligible` (the `has_non_primary` parameter became
+  `shape_blocked`). Blocked templates keep their placements on every
+  path and report `different_contig` on the cross-contig path.
+- `src/pairloom/config.py`: `RESCUE_TAG`/`RESCUE_VALUE` now live here
+  (classify imports config, never the reverse, so validation can
+  reference the constants without a cycle); `--status-tag ZR` raises a
+  `ConfigurationError` naming the reservation (startup exit 2).
+  `src/pairloom/classify.py` imports the constants from config.
+- Tests (suite 176 → 182): cross-contig hard-clip, missing-qualities,
+  and RG-conflict templates never relocate; same-contig parity pinned;
+  config-level rejection and CLI exit-2 coverage.
+- README (rescue exclusions, `ZR` reservation, test count) and AGENTS.md
+  invariant 10 updated.
+
+# Verification
+
+- `pixi run test`: 182 passed; `pixi run lint` / `pixi run format`:
+  clean.
+- Both reproductions re-run at the original sites: hard-clipped and
+  quality-less cross-contig pairs keep `seq2:0`/`seq1:2` without `ZR`
+  (reason `different_contig`); `--status-tag ZR` exits 2 before reading
+  the input; the standard rescue example still merges with the default
+  tag.
+- Benchmarks: both fixes touch cold paths (an eligibility predicate over
+  already-loaded records and config validation), so the existing
+  benchmark results stand unchanged; no re-run required.
