@@ -246,10 +246,10 @@ class TestSortAndIndex:
 
 class TestSubprocess:
     def test_console_script_entry_point(self, one_pair_bam, fx, tmp_path) -> None:
-        """The installed `pairmerge` entry point wires exit codes correctly."""
-        exe = shutil.which("pairmerge")
+        """The installed `pairloom` entry point wires exit codes correctly."""
+        exe = shutil.which("pairloom")
         if exe is None:
-            pytest.skip("pairmerge not on PATH")
+            pytest.skip("pairloom not on PATH")
         out = tmp_path / "o10"
         out.mkdir()
         proc = subprocess.run([exe, *base_args(fx, out)], capture_output=True, text=True)
@@ -257,9 +257,9 @@ class TestSubprocess:
         assert (out / "a.bam").exists()
 
     def test_version_flag(self) -> None:
-        exe = shutil.which("pairmerge")
+        exe = shutil.which("pairloom")
         if exe is None:
-            pytest.skip("pairmerge not on PATH")
+            pytest.skip("pairloom not on PATH")
         proc = subprocess.run([exe, "--version"], capture_output=True, text=True)
         assert proc.returncode == 0
-        assert "pairmerge" in proc.stdout
+        assert "pairloom" in proc.stdout

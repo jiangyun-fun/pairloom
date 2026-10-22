@@ -273,7 +273,7 @@ class Fixture:
         extra: list[str] | None = None,
         force: bool = True,
     ) -> tuple[int, dict[str, Path]]:
-        """Run pairmerge in-process; returns (exit_code, outputs)."""
+        """Run pairloom in-process; returns (exit_code, outputs)."""
         from pairloom.cli import main
 
         self._run_count += 1

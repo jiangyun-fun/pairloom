@@ -2,7 +2,7 @@
 
 Pair-aware BAM realignment, overlap analysis, and paired-end read merging.
 
-PairLoom (`pairmerge` CLI) processes paired-end BAM alignments against a
+PairLoom (`pairloom` CLI) processes paired-end BAM alignments against a
 reference and can:
 
 1. adjust mate placements jointly, deterministically resolving equivalent
@@ -27,7 +27,7 @@ run with a nonzero exit code, and outputs are published atomically.
 ```bash
 git clone <repo> && cd pairloom
 pixi install          # conda deps + editable install of the package
-pixi run pairmerge --help
+pixi run pairloom --help
 ```
 
 Requirements: Python ≥ 3.12, `pysam` ≥ 0.22 (HTSlib), `pyarrow` ≥ 16,
@@ -39,13 +39,13 @@ Requirements: Python ≥ 3.12, `pysam` ≥ 0.22 (HTSlib), `pyarrow` ≥ 16,
 
 ```bash
 # Adjust (and tag) alignments only; mates stay separate records:
-pairmerge --input input.bam --reference ref.fa --mode adjust \
+pairloom --input input.bam --reference ref.fa --mode adjust \
   --adjusted-bam adjusted.bam \
   --disagreement-parquet disagreements.parquet \
   --read-stats-parquet stats.parquet
 
 # Merge overlapping pairs into consensus reads:
-pairmerge --input input.bam --reference ref.fa --mode merge \
+pairloom --input input.bam --reference ref.fa --mode merge \
   --merged-bam merged.bam --unmerged-bam unmerged.bam \
   --disagreement-parquet disagreements.parquet \
   --read-stats-parquet stats.parquet

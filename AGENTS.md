@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Guidance for coding agents working in this repository. PairLoom is a Python
-package (CLI `pairmerge`) for pair-aware BAM realignment, overlap-disagreement
+package (CLI `pairloom`) for pair-aware BAM realignment, overlap-disagreement
 statistics, and paired-end read merging. Correctness, determinism, bounded
 memory, and fail-loud error handling are design constraints, not preferences.
 
@@ -116,7 +116,7 @@ in `pyproject.toml`. If imports suddenly stop resolving, check for
    the suite exists to pin behavior, not to chase coverage numbers.
 - When behavior changes deliberately, update the affected expectations AND the
   committed synthetic outputs (`scripts/build_synthetic_dataset.py`, then run
-  `pairmerge` per `data/synthetic/EXPECTED.md`).
+  `pairloom` per `data/synthetic/EXPECTED.md`).
 - The README is the source of truth for algorithms, policies, schemas, and
   defaults — update it in the same change as any behavior change.
 

@@ -1,4 +1,4 @@
-"""``pairmerge`` command-line interface.
+"""``pairloom`` command-line interface.
 
 Exit codes: 0 success, 2 usage/validation errors, 1 processing failures.
 Errors are concise by default; ``--debug`` prints full tracebacks.
@@ -28,7 +28,7 @@ from pairloom.validate import validate_paths
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pairmerge",
+        prog="pairloom",
         description=(
             "Pair-aware BAM realignment, overlap analysis, and paired-end read "
             "merging. Every output file is set through its own explicit path "
@@ -196,7 +196,7 @@ def build_config(args: argparse.Namespace) -> PairLoomConfig:
     sort_output = args.sort_output or args.index_output
     if args.index_output and not args.sort_output:
         print(
-            "pairmerge: note: --index-output implies coordinate sorting of BAM outputs",
+            "pairloom: note: --index-output implies coordinate sorting of BAM outputs",
             file=sys.stderr,
         )
     return PairLoomConfig(
@@ -245,11 +245,11 @@ def main(argv: list[str] | None = None) -> int:
         cfg = build_config(args)
         validate_paths(cfg)
     except ConfigurationError as exc:
-        print(f"pairmerge: error: {exc}", file=sys.stderr)
+        print(f"pairloom: error: {exc}", file=sys.stderr)
         return 2
     if cfg.force_mapq60_exact:
         print(
-            "pairmerge: WARNING: --force-mapq60-exact assigns MAPQ 60 to every "
+            "pairloom: WARNING: --force-mapq60-exact assigns MAPQ 60 to every "
             "exact match; this overstates mapping confidence for reads in "
             "repeated regions.",
             file=sys.stderr,
@@ -260,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         if cfg.debug:
             traceback.print_exc()
         else:
-            print(f"pairmerge: error: {exc}", file=sys.stderr)
+            print(f"pairloom: error: {exc}", file=sys.stderr)
             print("re-run with --debug for a full traceback", file=sys.stderr)
         return 1
     except Exception as exc:
@@ -270,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
             traceback.print_exc()
         else:
             print(
-                f"pairmerge: internal error ({type(exc).__name__}): {exc}",
+                f"pairloom: internal error ({type(exc).__name__}): {exc}",
                 file=sys.stderr,
             )
             print("re-run with --debug for a full traceback", file=sys.stderr)

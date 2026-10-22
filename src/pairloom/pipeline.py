@@ -812,7 +812,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                         leftover.append(backup)
                 if leftover:
                     print(
-                        "pairmerge: warning: could not remove backup file(s); "
+                        "pairloom: warning: could not remove backup file(s); "
                         "delete them manually: " + ", ".join(str(p) for p in leftover),
                         file=sys.stderr,
                     )
@@ -840,7 +840,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
         raise
 
     print(
-        "pairmerge: done. "
+        "pairloom: done. "
         + ", ".join(f"{k}={v}" for k, v in stats.counts().items())
         + (f"; merge-reasons={dict(reasons)}" if reasons else "")
         + f"; disagreement-positions={aggregator.reported_positions}",
@@ -914,7 +914,7 @@ def _drain_one(pending: deque, handle: Any) -> None:
 def _warn_committed() -> None:
     """Post-commit failure notice: outputs are complete and stay in place."""
     print(
-        "pairmerge: warning: failure after publication; all outputs were "
+        "pairloom: warning: failure after publication; all outputs were "
         "already published and are kept (no rollback).",
         file=sys.stderr,
     )
@@ -946,19 +946,19 @@ def _output_header(header_dict: dict, cfg: PairLoomConfig, sort_output: bool) ->
     hd["SO"] = "coordinate" if sort_output else "queryname"
     out["HD"] = hd
     pg_list = list(out.get("PG") or [])
-    pg_id = "pairmerge"
+    pg_id = "pairloom"
     existing_ids = {pg.get("ID") for pg in pg_list}
     suffix = 0
     while pg_id in existing_ids:
         suffix += 1
-        pg_id = f"pairmerge.{suffix}"
+        pg_id = f"pairloom.{suffix}"
     pg_list.append(
         {
             "ID": pg_id,
-            "PN": "pairmerge",
+            "PN": "pairloom",
             "VN": __version__,
             "CL": (
-                f"pairmerge mode={cfg.mode} input={cfg.input_path} reference={cfg.reference_path}"
+                f"pairloom mode={cfg.mode} input={cfg.input_path} reference={cfg.reference_path}"
             ),
         }
     )

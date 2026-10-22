@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pairmerge = "pairloom.cli:main"
+pairloom = "pairloom.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/jiangyunacw/pairloom"

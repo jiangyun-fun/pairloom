@@ -3,7 +3,7 @@
 Regenerate with `pixi run python scripts/build_synthetic_dataset.py`, then:
 
 ```bash
-pairmerge --input data/synthetic/input.bam --reference data/synthetic/ref.fa \
+pairloom --input data/synthetic/input.bam --reference data/synthetic/ref.fa \
   --mode merge --merged-bam /tmp/m.bam --unmerged-bam /tmp/u.bam \
   --disagreement-parquet /tmp/d.parquet --read-stats-parquet /tmp/s.parquet --force
 ```
