@@ -1,5 +1,5 @@
 ---
-title: "Truth-free controlled benchmark: fastp --merge vs bwa-mem2 + PairLoom on GO00009 S19 (plan)"
+title: "Truth-free controlled benchmark: fastp --merge vs bwa-mem2 + PairLoom on GO00009 S19 (as executed)"
 author: "Yun Jiang"
 date: today
 ---
@@ -67,14 +67,32 @@ uncovered gaps), and runtime/peak-memory measurement with a full-run estimate.
 - Secondary alignments in the pre-PairLoom BAM must not be dropped (no -M,
   no filtering) or the ambiguity strata lose their evidence.
 
-# Verification
+# Verification (as executed)
 
-1. Pilot counts reconcile: sampled pairs = prep survivors + prep-filtered;
-   arm A merged + unmerged = prep pairs; arm B merged + unmerged templates =
-   prep pairs (within bwa-mem2 unmapped handling).
-2. Resampling with the same seed reproduces byte-identical sample files.
-3. Synthetic expectations: clean and error categories merge in both arms with
-   correct sequences; adjacent merges only in arm B; gap merges in neither;
-   duplicate loci merge in arm A but refuse or place ambiguously in arm B;
-   AA/GG micro-case rescues to seq1 with ZR:i:1.
-4. Timing table complete for every stage with wall time and peak RSS.
+1. Pilot counts reconciled: universe 99,401 = 100,000 sampled minus 599
+   prep-filtered; fastp merged 99,224 and PairLoom 97,748, both matching
+   their own summaries and the join cross-table.
+2. Reproducibility recorded via seed, method, and sha256 in
+   `results/sample_stats.json`.
+3. Synthetic expectations met: clean and error categories merge in both arms
+   with 100% sequence correctness; adjacent merges only in arm B (19/20, the
+   miss on the duplicated contig); gap merges in neither; duplicated loci
+   merge 20/20 in arm A and refuse 20/20 in arm B; AA/GG micro-cases rescue
+   to seq1 with ZR:i:1 and turn rescue_ambiguous with the duplicate.
+4. Timing table complete (`results/timing.json`); full run launched in the
+   background with a completion watcher.
+
+# Deviations from the plan (as executed)
+
+1. `samtools view` cannot take `-` as an explicit pipe input in 1.24; all
+   pipeline sites now let it read stdin by default. The first run failed on
+   this and was rerun clean.
+2. Orientation normalization keys on R1's primary alignment strand in the
+   pre-PairLoom BAM, not on the merged record's FLAG bit, because PairLoom
+   merged records are always reference-oriented.
+3. Synthetic clean and error overlaps widened from 30 to 35 bp after the
+   parameter sweep showed fastp's threshold behaves as strictly-greater.
+4. An end-to-end arm A0 (fastp defaults on raw reads) was added and proved
+   byte-identical in merged output to the controlled arm on this sample.
+5. The full run reuses the pilot protocol without sampling
+   (`scripts/09_run_full.sh`) and writes `results/summary_full.json`.

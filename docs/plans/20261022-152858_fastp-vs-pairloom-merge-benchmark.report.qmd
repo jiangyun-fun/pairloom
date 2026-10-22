@@ -1,0 +1,1071 @@
+---
+title: "fastp --merge vs bwa-mem2 + PairLoom benchmark — GO00009 S19 pilot — report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+### Controlled two-arm merge benchmark on the GO00009 S19 oligo pool
+
+```
+level: high
+```
+
+#### reason
+
+High: the full protocol ran end to end on the pilot, every stage timed and
+logged, and the outputs reconcile with both tools' own summaries.
+
+#### description
+
+```
+type: [text, table]
+```
+
+1. New analysis repo `20261022.bench_pairloom_vs_fastp.GO00009_S19` (pixi env
+   fastp 1.4.0, bwa-mem2 2.2.1, samtools 1.24, pysam, polars) with nine
+   tracked scripts covering sampling, both arms, join, inspection, synthetic
+   generation, evaluation, timing, and the full-run launcher.
+2. Pilot: 100,000 pairs by reservoir sampling, seed 20261022, sha256
+   recorded. Both arms consume identical preprocessed mates (fastp PE
+   defaults, overlap correction off). 599 pairs filtered in preprocessing.
+3. Pilot headline, on 99,401 pairs:
+
+| Category | Pairs | Share |
+| --- | ---: | ---: |
+| Both merged, identical sequence | 94,015 | 94.58% |
+| Both merged, different sequence | 3,686 | 3.71% |
+| fastp only | 1,523 | 1.53% |
+| PairLoom only | 47 | 0.05% |
+| Neither | 130 | 0.13% |
+
+#### before
+
+No controlled comparison existed. The earlier proposal compared tool outputs
+with no shared preprocessing, no defined join, and no separate reporting
+axes, so disagreements could not be attributed to a mechanism.
+
+#### after
+
+The benchmark runs both arms from one seed-reproducible sample with recorded
+versions and commands. It reports agreement, panel consistency, and placement
+ambiguity as separate axes, keeps ambiguous pairs, and files representative
+disagreements with full evidence under an explicit unresolved category.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `results/sample_stats.json`, `results/provenance.txt`,
+  `results/summary.json`, `results/per_pair.parquet` in the analysis repo.
+- PairLoom done line: total=99401, mergeable=97748; fastp merged 99,224
+  (armA fastp.json). Both counts reconcile with the join universe.
+- Rendered pilot summary: `/bioproj/analysis/default/20261022.bench_pairloom_vs_fastp.GO00009_S19/report/pilot_summary.html`
+
+:::
+
+### Synthetic known-fragment tier with AA/GG micro-cases
+
+```
+level: high
+```
+
+#### reason
+
+High: every category expectation from the plan was met or exceeded, with the
+two deviations (duplicated-contig stragglers) traced to generator design and
+confirmed correct refusals.
+
+#### description
+
+```
+type: [table, text]
+```
+
+130 synthetic pairs, seed 20261022, 70 bp reads, 200 bp contigs plus one
+verbatim duplicate:
+
+| Category (n) | fastp merged / seq correct | PairLoom merged / seq / placement |
+| --- | --- | --- |
+| clean (40) | 40 / 40 | 38 / 38 / 38 |
+| err1 (20) | 20 / 20 | 19 / 19 / 19 |
+| err2 (10) | 10 / 10 | 10 / 10 / 10 |
+| adjacent, 0 overlap (20) | 0 | 19 / 19 / 19 |
+| gap, 30 bp uncovered (20) | 0 | 0 |
+| duplicated locus (20) | 20 / 20 | 0, all `rescue_ambiguous` |
+
+Every PairLoom miss or refusal originated on the duplicated contig, where
+placement is ambiguous by construction.
+
+#### before
+
+The AA/GG behavior existed only inside the unit suite as constructed fixtures
+with no end-to-end arm comparison and no error, adjacency, or gap categories.
+
+#### after
+
+The benchmark scores sequence correctness and placement correctness
+separately against known fragments. The micro-cases show PairLoom rescuing to
+`seq1:1 AACC` with `ZR:i:1` without the duplicate and refusing with
+`rescue_ambiguous` with it. fastp and bwa-mem2 cannot process 2 bp reads, so
+the micro tier is PairLoom-only by architecture.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `results/synthetic_summary.json` and `results/logs/{micro3,micro4}.stderr.txt`
+  in the analysis repo.
+- micro3 merged record: seq1, pos 1, AACC, ZR 1. micro4:
+  merge-reasons={'rescue_ambiguous': 1}.
+
+:::
+
+## fix
+
+None
+
+## limitation
+
+### Pilot covers 1.6% of the cohort; the full run is pending
+
+```
+level: high
+```
+
+#### reason
+
+High: the pilot is 100,000 of 6,115,824 pairs. The full run was launched and
+is running at the time of this report.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Category shares at 100k pairs carry sampling error of roughly 0.1
+   percentage points at these rates.
+2. The full run repeats prep, both arms, and the join on all pairs; its logs
+   land under `results/logs_full/` and its summary under
+   `results/summary_full.json`.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `results/sample_stats.json`: n_input_pairs 6,115,824, n_sampled 100,000.
+- `results/logs_full/nohup.out` shows the full run in progress (launched
+  2026-10-22 15:25).
+
+:::
+
+## caveat
+
+### Panel-consistency mildly favors PairLoom by construction
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the mechanism is certain, its magnitude is not quantified.
+
+#### description
+
+```
+type: [text]
+```
+
+PairLoom conditions merging on a unique joint placement, so its merged
+sequences re-align uniquely by construction. fastp merges without a
+reference. Panel-distance comparisons therefore say more about placement
+policy than about sequence quality. Per the protocol, no merge was labeled
+invalid for differing from a designed oligo, and unique mapping was not
+treated as truth.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+SE re-alignment of merged sequences: PairLoom 96,020 unique full matches,
+0 multi, 0 unmapped. fastp: 96,035 unique, 602 multi, 89 unmapped
+(`results/summary.json`).
+
+:::
+
+### QUAL strings are not comparable between arms
+
+```
+level: high
+```
+
+#### reason
+
+High: measured on every both-merged pair.
+
+#### description
+
+```
+type: [statistic]
+```
+
+Zero of 94,015 both-merged pairs share an identical QUAL string. The arms
+encode consensus confidence differently. Compare qualities within an arm, or
+recalibrate before comparing across arms.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`results/summary.json`: identical_qual_strings 0, different_qual_strings
+94,015.
+
+:::
+
+## assumption
+
+### Full-run cost extrapolates linearly from the pilot
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: per-pair costs are stable in both tools, but rescue frequency could
+shift on unsampled regions of the cohort.
+
+#### description
+
+```
+type: [text]
+```
+
+The estimate scales every stage by 61.16x at fixed thread counts. PairLoom's
+pilot time of 31.7 s at 4 threads gives about 32 min for the full cohort.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`results/timing.json`: full_over_pilot_ratio 61.16; per-stage estimates.
+
+:::
+
+## conclusion
+
+### The two tools agree on 94.6% of pairs and disagree through three mechanisms
+
+```
+level: high
+```
+
+#### reason
+
+High: the pilot join is complete, reconciles with both tools' own counts, and
+each mechanism was verified on representative examples with full evidence.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Both-different (3,686; 3.71%): 3,422 differ at exactly one position. The
+   dominant case is an equal-quality mate conflict: fastp calls a concrete
+   base at reduced quality, PairLoom emits `N` at q2 when the quality gap is
+   under `--min-quality-difference` (5). Worked example
+   `A00202:...:11071:34945`: a 1 bp insertion versus the design, both mates
+   `38M1I42M`, inserted bases T(q37) versus A(q37); fastp outputs T(q11),
+   PairLoom N(q2).
+2. fastp-only (1,523; 1.53%): concentrated on placement-ambiguous or
+   structurally inconsistent pairs. 666 have both mates under MAPQ 20, 102
+   have an unmapped mate, 737 are refused for structural reasons
+   (cross-contig concatemers, indel or insertion conflicts, non-primary
+   records). Their sequences still mostly match the panel, so the difference
+   is placement honesty, not sequence quality.
+3. PairLoom-only (47; 0.05%): fastp's ungapped-overlap diff limits reject
+   heavily error-laden pairs (overlaps 135-150 bp); PairLoom merges them via
+   quality-gated consensus at reduced MAPQ.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `results/summary.json` categories, by_amb_class, rescue_by_outcome.
+- `results/disagreements/*.json`: 15 evidence-complete examples per bucket.
+- PairLoom merge reasons: different_contig 453, rescue_ambiguous 370,
+  rescue_unsupported_alignment 308, non_primary_records 230.
+
+:::
+
+### Synthetic truth confirms sequence and placement semantics separately
+
+```
+level: high
+```
+
+#### reason
+
+High: known fragments make both axes exact; all expectations landed.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Where both arms merged, sequence correctness is 100% for both.
+2. Adjacent (0 bp overlap) pairs merge only in PairLoom, 19/20, sequences and
+   placements correct. The miss sits on the duplicated contig.
+3. Gapped pairs merge in neither arm; PairLoom reports `fragment_gap` and
+   never synthesizes the uncovered middle.
+4. Duplicated loci: fastp merges all 20 with correct sequences and no
+   placement; PairLoom refuses all 20 as `rescue_ambiguous`.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`results/synthetic_summary.json`; missed-qname contigs verified to be `c05`
+(`data/synthetic/truth.tsv`).
+
+:::
+
+### Preprocessing choice did not change fastp's merged output
+
+```
+level: high
+```
+
+#### reason
+
+High: exact comparison on the full pilot merged set.
+
+#### description
+
+```
+type: [statistic]
+```
+
+The end-to-end arm (fastp defaults on raw reads, production style) produced
+the same 99,224 merged pairs with identical sequences as the controlled arm
+on preprocessed mates. The separate end-to-end comparison adds no merge-level
+signal on this sample.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`results/summary.json` a0_end_to_end: a0_merged 99,224,
+a0_seq_identical_to_a 99,224.
+
+:::
+
+## recommendation
+
+### M: Choose the arm by what the analysis needs, not by merge rate
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: grounded in the pilot mechanisms, but the trade-off is use-case
+dependent.
+
+#### description
+
+```
+type: [text]
+```
+
+Merge rates differ by 1.5 percentage points, so rate is not the discriminator.
+If per-design molecule counting wants maximum sequence recovery, fastp
+suffices. If downstream steps consume placements, PairLoom's refusals on
+ambiguous loci are the safer semantics. State which semantics an analysis
+assumes before choosing.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+fastp merged 99.82%, PairLoom 98.34%; the fastp-only excess is 95%
+panel-ambiguous or imperfect on re-alignment (`results/summary.json`).
+
+:::
+
+### M: Treat merge-reason summaries as pipeline telemetry
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward; the benchmark's refusal taxonomy shows the reasons
+are informative.
+
+#### description
+
+```
+type: [text]
+```
+
+Surface PairLoom's merge-reason counts in QC reports; they separate
+concatemers, ambiguous loci, and unsupported alignments.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Measure joint-rescue cost on low-MAPQ-heavy cohorts before scaling
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward; still linear per unique-locus template.
+
+#### description
+
+```
+type: [text]
+```
+
+Sample-measure rescue cost on large references; `--no-rescue` opts out.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward advisory guard.
+
+#### description
+
+```
+type: [text]
+```
+
+Measure target-reference repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Prefer --threads 4 --chunk-size 256 for large cohorts
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward operational tuning advice.
+
+#### description
+
+```
+type: [text]
+```
+
+Scaling flattens beyond four workers.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Analyze the full 6.12M-pair run and compare against the pilot
+
+```
+level: high
+```
+
+#### reason
+
+High: the run is already executing with a completion watcher armed.
+
+#### description
+
+```
+type: [text]
+```
+
+Read `results/summary_full.json` when the background run completes; report
+category-share shifts and rescue frequency at cohort scale.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Background watcher armed on `results/logs_full/nohup.out` (job started
+15:25, pairloom stage estimated at about 32 min).
+
+:::
+
+### M: Slide gapped alignments via bounded local realignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward; `rescue_unsupported_alignment` and
+`indel_conflict` refusals in the pilot renew its relevance.
+
+#### description
+
+```
+type: [text]
+```
+
+Extend candidate discovery beyond exact ungapped blocks.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Batch the rescue reference search with a multi-pattern index
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Aho-Corasick-style batching per work chunk.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward; the benchmark's join would consume it directly.
+
+#### description
+
+```
+type: [text]
+```
+
+Overlap-length distributions and merge-rejection reason counts.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Build a calibrated joint-MAPQ model for rescued pairs
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Derive joint confidence instead of a constant.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Optimize per-template SAM-string round-trips
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Profile the single-process serialization path.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Pixi-based test matrix, ruff, benchmark smoke.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Promote the synthetic known-fragment benchmark into the repo suite
+
+```
+level: low
+```
+
+#### reason
+
+Low: it proved exact and cheap; repo integration is packaging work.
+
+#### description
+
+```
+type: [text]
+```
+
+Move the generator and evaluator under `benchmarks/` as a correctness tier.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+The synthetic tier lives in the analysis repo scripts 05-07 with
+`results/synthetic_summary.json`.
+
+:::
+
+## observation
+
+### fastp's overlap threshold behaves as strictly-greater on exact boundaries
+
+```
+level: high
+```
+
+#### reason
+
+High: reproduced with a parameter sweep on the synthetic reads.
+
+#### description
+
+```
+type: [statistic]
+```
+
+With `--overlap_len_require 30`, fastp merged 0 pairs whose overlap is
+exactly 30 bp. The same reads yielded 90 merges at threshold 25. The
+synthetic overlap was widened to 35 bp to clear the boundary.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+Sweep output: req=30 merged_reads=0; req=25/20/10 merged_reads=90
+(benchmark session log, 2026-10-22).
+
+:::
+
+### PairLoom rescued 44 pairs with sequences identical to fastp's
+
+```
+level: high
+```
+
+#### reason
+
+High: rescue successes carry `ZR:i:1` and their outputs match the fastp
+merge of the same pair.
+
+#### description
+
+```
+type: [statistic]
+```
+
+Of 731 rescue-eligible pilot pairs, 44 succeeded and all 44 agree exactly
+with fastp's merged sequence for the same pair. 687 were refused.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`results/summary.json`: rescue_success 44 (all both_identical),
+rescue_refusal_inferred 687.
+
+:::
+
+## process
+
+### Piped samtools view with an explicit dash input failed the first run
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The runner piped bwa-mem2 SAM into `samtools view -b -o out.bam -`.
+2. samtools 1.24 refused to read the header from the literal argument `-`,
+   exited, and bwa-mem2 died on SIGPIPE after one second.
+3. The better action was to omit the input argument so samtools reads stdin
+   by default; all three pipeline sites were fixed and the pilot reran clean.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`results/logs/bwamem2_mem.time.txt`: "Command terminated by signal 13";
+stderr showed "[main_samview] fail to read the header from \"-\"".
+
+:::
+
+### Orientation was first keyed on the merged record's FLAG strand bit
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The join revcomp'd fastp reads when the PairLoom merged record had the
+   reverse-strand bit set.
+2. PairLoom merged records are always reference-oriented, so half the pairs
+   compared in the wrong orientation and both_different inflated to 51%.
+3. The sanity check caught the 50/50 signature; the fix keys normalization on
+   R1's primary alignment strand in the pre-PairLoom BAM, and both_different
+   collapsed to 3.71%, 93% of it single-position.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+Before: both_identical 46,720 / both_different 50,981. After: 94,015 /
+3,686 (`results/summary.json` history in the session log).
+
+:::
+
+### Synthetic overlaps were built exactly on fastp's default boundary
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The generator used 30 bp overlaps against `--overlap_len_require 30`.
+2. fastp merged nothing, because its check is strictly-greater on this data.
+3. The fix widened clean and error overlaps to 35 bp; the boundary behavior
+   itself was recorded as an observation instead of being silently tuned
+   away.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+First synthetic run: a_merged 0 everywhere; sweep 30/25/20/10 gave
+0/90/90/90 merges.
+
+:::
+
+### Plan-first execution with per-stage timing and reconciliation
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The plan was written and committed before any implementation, and its
+   verification criteria were checkable.
+2. Every stage ran under GNU time; join counts reconciled against both
+   tools' own summaries (99,224 and 97,748).
+3. Disagreements kept an explicit unresolved category per the protocol, and
+   ambiguous pairs were retained rather than dropped.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Plan: `docs/plans/20261022-145654_fastp-vs-pairloom-merge-benchmark.plan.qmd`;
+`results/logs/*.time.txt`; `results/timing.json`.
+
+:::
+
+## change
+
+### Files, git, environments
+
+```
+level: high
+```
+
+#### reason
+
+High: mutation facts recorded directly.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Repo | Verb | Paths |
+| --- | --- | --- |
+| pairloom | Created | `docs/plans/20261022-145654_...plan.qmd`, this report |
+| pairloom | Updated | `docs/misc/next_and_recommendation.qmd`, `docs/misc/requirements_audit.qmd` |
+| analysis | Created | `pixi.toml`, `README.md`, `scripts/00-09`, `report/pilot_summary.qmd`, `results/*` |
+| analysis | Updated | `.gitignore` |
+
+Environments: new pixi workspace in the analysis repo (fastp 1.4.0,
+bwa-mem2 2.2.1, samtools 1.24, python 3.13.16, pysam 0.24.1, polars 2.0.0).
+Git: pairloom — plan commit 0829a86 plus this report's docs commit; analysis
+— dc20b94, e04be7f. Nothing pushed. Background: full-run job active.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline` in both repos; `results/logs_full/nohup.out` live.
+
+:::
+
+## other
+
+None

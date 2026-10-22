@@ -5,17 +5,19 @@ author: "Yun Jiang"
 
 ## next
 
-1. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
-2. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk) so genome-scale runs avoid the per-template linear scan.
-3. M: add a `--merge-stats-parquet` optional output with overlap-length distributions and merge-rejection reason counts.
-4. M: implement the truth-grounded fastp-vs-pairloom merge benchmark on the GO00009 S19 sample once the user approves the design.
+1. M: analyze the full 6.12M-pair GO00009 benchmark run when it completes; compare category shares against the pilot.
+2. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
+3. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk) so genome-scale runs avoid the per-template linear scan.
+4. M: add a `--merge-stats-parquet` optional output with overlap-length distributions and merge-rejection reason counts.
 5. L: build a calibrated joint-MAPQ model for rescued pairs to replace the flat output MAPQ 0.
 6. L: profile and optimize the per-template SAM-string serialization in the single-process path.
 7. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke) with Dependabot.
+8. L: promote the synthetic known-fragment benchmark into the repo suite under `benchmarks/`.
 
 ## recommendation
 
-1. M: treat merge-reason summaries (now including `rescue_*` reasons) as pipeline telemetry in downstream QC reports.
-2. M: for low-MAPQ-heavy cohorts on large references, measure joint-rescue cost on a sample first; `--no-rescue` opts out.
-3. L: before relying on `--force-mapq60-exact`, quantify the repeat content of the target reference.
-4. L: for very large cohorts, prefer `--threads 4` with `--chunk-size 256`.
+1. M: choose between fastp and PairLoom by required semantics — sequence recovery vs placement honesty — not by merge rate.
+2. M: treat merge-reason summaries (now including `rescue_*` reasons) as pipeline telemetry in downstream QC reports.
+3. M: for low-MAPQ-heavy cohorts on large references, measure joint-rescue cost on a sample first; `--no-rescue` opts out.
+4. L: before relying on `--force-mapq60-exact`, quantify the repeat content of the target reference.
+5. L: for very large cohorts, prefer `--threads 4` with `--chunk-size 256`.

@@ -809,3 +809,36 @@ Judge whether the user's two-arm comparison — fastp --merge on the S19 GO00009
 ### change
 
 None (question turn; repo changes limited to this entry and the rolling-state item).
+
+## Implement the fastp-vs-pairloom merge benchmark (pilot)
+
+```
+level: high
+date: 2026-10-22
+cross-repo: pairloom, 20261022.bench_pairloom_vs_fastp.GO00009_S19
+```
+
+### description
+
+Implement the approved 8-point benchmark protocol — reproducible 100k-pair pilot, shared preprocessing without overlap correction, both arms (fastp --merge vs bwa-mem2 + PairLoom), qname join with orientation normalization, separate agreement/panel/placement axes, retained ambiguous pairs, representative disagreement inspection, synthetic known-fragment tier with AA/GG cases, runtime and memory — then run the pilot and report.
+
+### result
+
+1. Implemented: analysis repo 20261022.bench_pairloom_vs_fastp.GO00009_S19 (pixi env, 9 scripts, git-tracked); pilot of 100k pairs, seed 20261022, run end to end with timing.
+2. Verified: pilot agreement 94.58% identical; 3.71% differ at 1-2 bases (equal-qual conflicts); fastp-only 1.53% concentrated on ambiguous loci; pairloom-only 0.05%.
+3. Verified: synthetic tier all expectations met (adjacent merges PairLoom-only; dup loci fastp-merges/PairLoom-refuses; gap merges in neither); AA/GG micro-cases rescue and refuse as designed.
+4. Launched: full 6.12M-pair run in the background (~45 min estimated) with a completion watcher; analysis to follow.
+
+### change
+
+Files (pairloom repo):
+- Created: `docs/plans/20261022-145654_fastp-vs-pairloom-merge-benchmark.plan.qmd`, `docs/plans/20261022-152858_fastp-vs-pairloom-merge-benchmark.report.qmd`
+- Updated: `docs/misc/next_and_recommendation.qmd`, `docs/misc/requirements_audit.qmd` (this entry)
+
+Files (analysis repo 20261022.bench_pairloom_vs_fastp.GO00009_S19):
+- Created: `pixi.toml`, `README.md`, `scripts/00-09_*`, `report/pilot_summary.qmd`, `results/{summary.json,per_pair.parquet,synthetic_summary.json,timing.json,sample_stats.json,provenance.txt,disagreements/*}`
+- Mirror audit entry in its `docs/misc/requirements_audit.qmd`
+
+Packages: none into shared envs; Environments: new pixi workspace in the analysis repo (fastp 1.4.0, bwa-mem2 2.2.1, samtools 1.24, pysam 0.24.1, polars 2.0.0).
+
+Git: pairloom — plan commit 0829a86 and this docs commit on main, not pushed; analysis repo — dc20b94, e04be7f on main, not pushed.
