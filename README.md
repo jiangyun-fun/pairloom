@@ -7,12 +7,16 @@ reference and can:
 
 1. adjust mate placements jointly, deterministically resolving equivalent
    placements in repetitive reference sequence;
-2. recompute MAPQ conservatively after adjustment (never overstating
+2. rescue pairs whose individual reads are ambiguous (MAPQ 0) by placing
+   the template jointly against the whole reference, when that joint
+   placement is uniquely supported;
+3. recompute MAPQ conservatively after adjustment (never overstating
    uniqueness for repeated reads);
-3. detect and count overlapping-base disagreements between mates as Parquet;
-4. classify every template and tag it in the BAM;
-5. merge overlapping mates into a single consensus record with a correct,
-   reconstructed CIGAR and preserved outer soft clips.
+4. detect and count overlapping-base disagreements between mates as Parquet;
+5. classify every template and tag it in the BAM;
+6. merge mates into a single consensus record with a correct, reconstructed
+   CIGAR and preserved outer soft clips — overlapping mates under the
+   consensus policy, adjacent (zero-overlap) mates by direct joining.
 
 Correctness, determinism, bounded memory, and fail-loud error handling are
 design constraints, not afterthoughts: every unexpected condition aborts the
@@ -98,7 +102,75 @@ placement. Discovery is bounded and never claims global uniqueness; hitting
 the candidate cap flags the read *truncated* and triggers a conservative
 MAPQ cap. The BAM's own placement always keeps a slot when the cap
 truncates the set, so the achievable mate overlap never shrinks because of
-truncation.
+truncation. Windowed sliding is same-contig, same-strand by construction;
+cross-contig and opposite-strand placements are the rescue path's job
+(next section).
+
+### Joint low-MAPQ pair rescue
+
+Individual reads of a pair can each have several equally good alignments
+and MAPQ 0 while their joint placement is uniquely supported — one contig
+admits exactly one placement pair consistent with the library model. The
+aligner had to pick one primary per read arbitrarily, and PairLoom's result
+must not depend on those picks. When a both-mapped template fails merging
+for a placement-level reason — `mapq_below_min`, `different_contig`,
+`orientation_incompatible`, or `fragment_length_out_of_bounds` — and at
+least one mate's **original** MAPQ is below `--min-mapq`, rescue runs
+(default on; `--no-rescue` disables, and `--candidate-source bam` never
+rescues):
+
+1. both mates' exact-match ungapped aligned blocks are searched over every
+   reference contig present in the BAM header, on both strands (only
+   FASTA contigs the header can express are considered);
+2. placements are combined into candidate joint placements under the same
+   constraints as ordinary pair selection — same contig, the
+   `--library-orientation` model, `--min/max-fragment-length`;
+3. the template is rescued only when **exactly one** compatible joint
+   placement exists AND the search was complete: neither mate's occurrence
+   count exceeded `--max-candidates-per-read`, and pair enumeration did
+   not exhaust `--max-pair-evaluations`. A deterministic tie-break never
+   counts as evidence of uniqueness — two equally supported placements
+   leave the pair unmerged with reason `rescue_ambiguous`.
+
+Outcomes and rejection reasons surface in the stderr merge-reason summary
+(`rescue_applied` merges; `rescue_ambiguous`, `rescue_no_compatible_pair`,
+`rescue_search_truncated`, `rescue_unsupported_alignment` keep the original
+placements and records) and as the `ZR:i:1` tag on every record whose
+placement came from rescue (both mates in adjust mode, the consensus record
+in merge mode).
+
+Policy details:
+
+- **MAPQ**: rescued records and their consensus carry output MAPQ 0. A
+  unique joint placement is real evidence, but PairLoom has no calibrated
+  joint-MAPQ model, so it does not invent confidence — rescue eligibility
+  is independent of output MAPQ, and exact sequence match alone never
+  earns MAPQ 60. For ordinary (unrescued) pairs, `--min-mapq` still tests
+  the original aligner MAPQ exactly as before; rescue bypasses that one
+  gate only for templates whose joint placement it just verified.
+- **Statistics**: rescued pairs contribute no disagreement observations.
+  Statistical eligibility keeps testing the original aligner MAPQ (an
+  eligible rescue always has a sub-threshold mate), so the disagreement
+  population is unchanged by merge eligibility.
+- **Search cost**: rescue pays one C-speed substring scan of the reference
+  per rescued mate block (fetches chunked at 1 Mbp, so memory stays
+  bounded on large contigs; the scan aborts early once the occurrence cap
+  is exceeded, since truncation already decides the outcome). Only
+  trigger-eligible templates pay it. At genome scale this linear-per-pair
+  cost dominates; batched multi-pattern indexing is future work, and
+  `--no-rescue` / `--candidate-source bam` are the escape hatches.
+- **Records**: a rescued placement may change contig and strand. SEQ/QUAL
+  are rewritten into the new alignment orientation (reverse complement,
+  reversed qualities, reversed CIGAR op order — clips swap ends);
+  0x10/0x20 strand flags, 0x2 proper-pair, RNEXT/PNEXT, and TLEN are
+  refreshed; NM/MD are recomputed (`NM:i:0` / `MD:<span>`, exact by
+  construction); stale scoring tags are removed; read groups are kept.
+  Templates carrying secondary/supplementary records are never rescued
+  (their non-primary records keep pointing at the old locus, and those
+  records pass through untouched, as before).
+- Mismatch- or indel-bearing mates never rescue
+  (`rescue_unsupported_alignment`); rescue is deliberately at least as
+  conservative as windowed sliding.
 
 ### Joint R1/R2 optimization
 
@@ -145,7 +217,8 @@ window, neither candidate discovery nor pair evaluation
 aligner must have considered the read high quality.
 `--force-mapq60-exact` (compatibility mode) assigns 60 to every exact
 match and prints an explicit warning about overstating mapping
-confidence.
+confidence. Rescued records (joint low-MAPQ pair rescue) carry output
+MAPQ 0 — see the rescue section.
 
 Note: the `--min-mapq` eligibility filters (for overlap observations and
 merging) apply to the **original** aligner MAPQ, not to the conservative
@@ -181,7 +254,10 @@ overlapping nucleotides are reported. At a reported position, counts use
 all eligible overlapping observations, including agreeing ones from other
 pairs. `dp` counts read-base observations (not molecules); a merged
 consensus base is never an additional observation; statistics are computed
-from the two original adjusted mates, before any consensus.
+from the two original adjusted mates, before any consensus. Rescued pairs
+(joint low-MAPQ rescue) contribute no observations — their statistical
+eligibility keeps testing the original aligner MAPQ, which rescue
+deliberately bypasses only for merging.
 
 ### Consensus merging
 
@@ -200,12 +276,26 @@ Merging walks the reference span (never string concatenation):
 - insertions merge when both mates insert the identical sequence
   (per-base quality maximum); a single-mate insertion inside the other
   mate's span is `insertion_conflict`;
-- uncovered middle positions are never synthesized (`fragment_gap`);
+- uncovered middle positions are never synthesized (`fragment_gap`) — a
+  single uncovered reference base rejects the join;
 - hard-clipped mates are not merged (`hard_clipped_mate`: their full
   sequence is not recoverable from the BAM);
-- mates must pass `--min-mapq`, share one read group (a conflict is
+- mates must pass `--min-mapq` (rescued pairs bypass only this gate — see
+  the rescue section), share one read group (a conflict is
   `read_group_conflict`), satisfy the library orientation model, and
-  overlap on at least `--min-overlap` aligned reference bases (default 10).
+  overlap on at least `--min-overlap` aligned reference bases (default 0).
+
+**Adjacent joining (`--min-overlap 0`, the default)**: zero explicitly
+allows joining mates whose aligned bases cover a continuous fragment with
+no overlap — each base keeps its contributing mate's original quality, the
+CIGAR is reconstructed by the same reference walk, and consensus rules
+apply wherever the mates do overlap. The broader effect of the default:
+pairs overlapping by 1–9 bases, previously rejected as
+`insufficient_overlap` at the old default of 10, now merge by default;
+each such merge corroborates only a few bases, so raise `--min-overlap`
+explicitly when stricter overlap evidence is required. An uncovered base
+between the mates still rejects (`fragment_gap`), and `--min-overlap 1`
+or higher rejects adjacent pairs.
 
 Quality model (sequencing errors assumed independent):
 
@@ -320,30 +410,47 @@ configuration, never of dataset size. Overlap analysis fetches only the
 intersection of the mates' aligned spans, so distant mates never allocate
 the span between them. Reference contigs are cached under a
 base budget (contigs larger than the budget stream through HTSlib). The
-whole BAM is never loaded.
+whole BAM is never loaded. Joint rescue adds no unbounded state: each scan
+holds at most one 1 Mbp reference chunk and at most
+`--max-candidates-per-read + 1` occurrences per mate; MAPQ-60-only input
+(the benchmark dataset) never triggers it, so the numbers above measure
+the no-rescue path (see `benchmarks/results/RESULTS.md`).
 
 ## Selected defaults for spec ambiguities (§15)
 
 1. Indel-bearing alignments are not slid (only exact ungapped blocks are);
    indel re-anchoring is a documented limitation, not a hidden heuristic.
+   The same restriction bounds joint rescue (exact ungapped mates only).
 2. Adjust mode evaluates mergeability for classification/tagging but emits
    no consensus records.
 3. Cross-contig and constraint-violating pairs keep their original
-   placements and have 0x2 cleared.
+   placements and have 0x2 cleared — unless joint low-MAPQ rescue (default
+   on) finds a unique compatible joint placement, which then relocates and
+   re-evaluates them.
 4. NM/MD are recomputed only where PairLoom changed the record; unchanged
    records keep their input tags. Merged/adjusted exact placements are
    orientation-independent (`NM:i:0`, `MD:<span>`).
-5. `--max-fragment-length` defaults to 1000; `--min-overlap` to 10;
-   `--min-base-quality`/`--min-mapq` to 20; window 500; candidates 10;
-   batch 65536; aggregation spill threshold 10^6 positions.
+5. `--max-fragment-length` defaults to 1000; `--min-overlap` to 0 (zero
+   allows adjacent joining); `--min-base-quality`/`--min-mapq` to 20;
+   window 500; candidates 10; batch 65536; aggregation spill threshold
+   10^6 positions; joint rescue is enabled unless `--no-rescue`.
 6. Non-paired primary records classify as `left_aligned_only`.
 
 ## Known limitations
 
 - Only exact-match ungapped blocks slide; equivalent-placement
-  normalization for gapped alignments is future work.
-- Uniqueness claims are bounded by the search window; MAPQ 60 additionally
-  requires original-MAPQ corroboration.
+  normalization for gapped alignments is future work. Joint rescue
+  inherits the restriction (mismatch- or indel-bearing mates report
+  `rescue_unsupported_alignment`).
+- Uniqueness claims from windowed sliding are bounded by the search
+  window; MAPQ 60 additionally requires original-MAPQ corroboration.
+  Rescue uniqueness, by contrast, always comes from a whole-reference
+  search of both mates' blocks — the window never bounds it.
+- Rescue costs one linear reference scan per rescued mate block. At
+  genome scale (≥ 100 Mbp references) with many low-MAPQ templates this
+  dominates runtime; batched multi-pattern indexing is future work.
+- Rescued records carry output MAPQ 0 by policy; a calibrated joint-MAPQ
+  model does not exist yet.
 - RNA-seq reference skips (N) inside a mate make the pair unmergeable
   (`reference_skip_unsupported`).
 - `H`-clipped mates cannot merge (full sequence unavailable in BAM).
@@ -353,7 +460,7 @@ whole BAM is never loaded.
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (151 tests, all 35 spec scenarios)
+pixi run test          # full pytest suite (172 tests, all 35 spec scenarios)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark

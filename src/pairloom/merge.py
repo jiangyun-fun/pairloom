@@ -107,6 +107,7 @@ def try_merge(
     cfg: PairLoomConfig,
     has_non_primary: bool = False,
     merged_mapq: int | None = None,
+    rescue_bypass_mapq: bool = False,
 ) -> MergeOutcome:
     """Attempt to merge two adjusted mates into a consensus fragment.
 
@@ -115,7 +116,9 @@ def try_merge(
     OUTPUT MAPQ. When omitted, the output MAPQ defaults to the eligibility
     values so direct unit use keeps its historic meaning; the pipeline passes
     the conservative adjusted MAPQs so a consensus record never overstates
-    mapping confidence.
+    mapping confidence. ``rescue_bypass_mapq`` skips ONLY the original-MAPQ
+    eligibility gate, for pairs whose joint placement was rescued by a unique
+    global pair search; every other gate still applies.
     """
     if has_non_primary:
         return MergeFailure(REASON_NON_PRIMARY)
@@ -123,7 +126,7 @@ def try_merge(
         return MergeFailure(REASON_HARD_CLIP)
     if not struct1.has_qualities or not struct2.has_qualities:
         return MergeFailure(REASON_NO_QUALITIES)
-    if struct1.mapq < cfg.min_mapq or struct2.mapq < cfg.min_mapq:
+    if not rescue_bypass_mapq and (struct1.mapq < cfg.min_mapq or struct2.mapq < cfg.min_mapq):
         return MergeFailure(REASON_MAPQ)
     if struct1.skipped or struct2.skipped:
         return MergeFailure(REASON_SKIP)

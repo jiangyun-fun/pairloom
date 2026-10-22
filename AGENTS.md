@@ -13,7 +13,7 @@ through pixi so the workspace env — not the ambient PATH — supplies binaries
 | Task | Command |
 | ---- | ------- |
 | Set up env (conda deps + editable install) | `pixi install` |
-| Full test suite (151 tests) | `pixi run test` |
+| Full test suite (172 tests) | `pixi run test` |
 | Stop at first failure | `pixi run test-fast` |
 | Lint (ruff check) | `pixi run lint` |
 | Format check / apply | `pixi run format` / `pixi run format-fix` |
@@ -33,6 +33,7 @@ in `pyproject.toml`. If imports suddenly stop resolving, check for
   - `cigarops.py` CIGAR math/validation; `alignment.py` placements and
     reference-orientation read structures; `candidates.py` exact-block
     candidate discovery; `pairing.py` joint R1/R2 selection;
+    `rescue.py` global joint low-MAPQ pair rescue;
   - `mapq.py` the conservative MAPQ policy table; `overlap.py` overlap
     observations; `merge.py` consensus merging; `classify.py` template
     classification and tagging;
@@ -50,7 +51,7 @@ in `pyproject.toml`. If imports suddenly stop resolving, check for
   `docs/misc/` — requirements audit and rolling next/recommendation state.
   Follow that pattern for middle/large changes.
 
-## Critical invariants (each was violated once; do not repeat)
+## Critical invariants (1–9 were each violated once; do not repeat)
 
 1. **SAM orientation**: BAM SEQ/CIGAR/QUAL are stored in REFERENCE orientation
    for both strands. Never revcomp a reverse-strand record before comparing
@@ -62,11 +63,17 @@ in `pyproject.toml`. If imports suddenly stop resolving, check for
    output records carry the adjusted values; merged records carry
    `min(adjusted R1, adjusted R2)`. Never let an ambiguous repeat placement
    earn MAPQ 60 — including via truncated searches (candidate cap or
-   `--max-pair-evaluations` exhaustion must flag truncation).
+   `--max-pair-evaluations` exhaustion must flag truncation). Rescued
+   pairs (see 10) are the single exception: rescue bypasses the
+   original-MAPQ merge gate, and rescued records/consensus carry output
+   MAPQ 0 — eligibility independent of output MAPQ, exact match never
+   earning 60.
 4. **TLEN**: opposite signs within a template; on equal start coordinates
    read1 is positive.
 5. **Mate fields are cross-record**: after any adjustment, refresh RNEXT/PNEXT
-   (including the unmapped mate of an orphan) and reciprocal `MQ`.
+   (including the unmapped mate of an orphan), reciprocal `MQ`, and — when
+   a relocation changed a mate's strand (rescue only) — the 0x10/0x20
+   strand flags.
 6. **Publish semantics in `run_pipeline`**: temp files then `os.replace`;
    pre-existing outputs are backed up and restored on failure; after the last
    publication the run is COMMITTED and no later failure may delete outputs —
@@ -80,7 +87,22 @@ in `pyproject.toml`. If imports suddenly stop resolving, check for
    (adjacent identical ops share a boundary and would overwrite each other);
    expand SAM `=` SEQ shorthand against the reference before scoring,
    statistics, or merging (clipped/inserted `=` stays literal). Note:
-   pysam's `query_sequence` setter drops `query_qualities` — re-set them.
+   pysam's `query_sequence` setter drops `query_qualities` — re-set them
+   (rescue's strand flip reverses them when restoring).
+10. **Joint rescue is evidence-gated, never tie-break-gated**:
+   `--min-overlap 0` means adjacent (zero-overlap) joining of a
+   contiguously covered fragment — one uncovered base still rejects
+   (`fragment_gap`), `--min-overlap 1` rejects adjacency. Rescue
+   (default on) fires only for placement-level merge failures with a
+   sub-`--min-mapq` original mate, relocates only on EXACTLY ONE
+   globally-compatible joint placement with an untruncated search
+   (`--max-candidates-per-read`, `--max-pair-evaluations` both gate the
+   uniqueness claim), never touches mismatch/indel mates or templates
+   with non-primary records, searches every BAM-header contig on both
+   strands with strand labels derived from the RAW read sequence, marks
+   rescued records `ZR:i:1`, and excludes rescued pairs from disagreement
+   statistics. High-MAPQ discordant pairs are never rescued — their
+   discordance is evidence, not ambiguity.
 
 ## Testing and regression discipline
 

@@ -34,9 +34,11 @@ outputs produced by the current version and validated by the test suite.
   `16M`, `NM:i:0`, `MD:Z:16`; the consensus carries the conservative
   MAPQ 3 (min of the two adjusted mate MAPQs — eligibility gates on the
   original aligner MAPQ 60, the output never does).
-- `pair_far` stays unmerged with reason `insufficient_overlap`;
-  `pair_half` keeps its two records with `ZC:Z:left_aligned_only`;
-  `pair_none` records carry `ZC:Z:neither_aligned`.
+- `pair_far` stays unmerged: with the default `--min-overlap 0` the mates
+  pass the overlap gate but the 30 uncovered bases between them reject the
+  join (`fragment_gap`; at the previous default of 10 the reason was
+  `insufficient_overlap`); `pair_half` keeps its two records with
+  `ZC:Z:left_aligned_only`; `pair_none` records carry `ZC:Z:neither_aligned`.
 - Disagreement table: exactly one row — `chr1`, pos 516, ref base `A`,
   alt `C`, `dp=2`, `adf=1`, `adr=0`, `af=0.5` — computed from the two
   original mates, never from the consensus.

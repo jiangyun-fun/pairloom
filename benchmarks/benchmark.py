@@ -6,6 +6,12 @@ BAM with overlapping pairs, disagreements, and unmapped templates), then
 measures end-to-end wall time, per-stage profile, and peak RSS for several
 worker counts. Results are written as Parquet plus a Markdown table.
 
+``--ambiguous-pairs N`` (default 0) appends N both-mates-MAPQ-0 templates
+after the normal pairs — half inside repeat islands (rescue aborts on the
+occurrence cap), half on unique sequence (rescue scans the whole reference
+and merges). The default dataset is byte-identical to previous versions,
+so default runs stay comparable.
+
 Usage:
     python benchmarks/benchmark.py --pairs 20000 --threads 1,2,4 \
         --output-dir benchmarks/results
@@ -51,8 +57,17 @@ def build_reference(path: Path, length: int = 2_000_000, seed: int = 42) -> str:
     return seq
 
 
-def build_bam(bam_path: Path, ref: str, pairs: int, seed: int = 7) -> None:
-    """Query-name-sorted BAM: 20% repeat-island pairs, 2% unmapped, ~0.2% SNVs."""
+def build_bam(
+    bam_path: Path, ref: str, pairs: int, seed: int = 7, ambiguous_pairs: int = 0
+) -> None:
+    """Query-name-sorted BAM: 20% repeat-island pairs, 2% unmapped, ~0.2% SNVs.
+
+    ``ambiguous_pairs`` appends both-mates-MAPQ-0 templates (rescue input):
+    half drawn from repeat islands (occurrence-cap truncation), half from
+    unique sequence (full-reference scans that end in a unique rescue).
+    The normal pairs' rng consumption is unchanged, so the default dataset
+    (``ambiguous_pairs=0``) is byte-identical to earlier versions.
+    """
     rng = random.Random(seed)
     length = len(ref)
     islands = []
@@ -96,6 +111,37 @@ def build_bam(bam_path: Path, ref: str, pairs: int, seed: int = 7) -> None:
                         seq[k] = rng.choice([b for b in "ACGT" if b != seq[k]])
             r1 = _record(hdr, name, 0x1 | 0x40 | 0x2, pos1, "".join(r1_seq), pos2)
             r2 = _record(hdr, name, 0x1 | 0x80 | 0x10 | 0x20 | 0x2, pos2, "".join(r2_seq), pos1)
+            out.write(r1)
+            out.write(r2)
+
+        # Both-mates-MAPQ-0 templates: exact mates, so every one of them
+        # triggers the joint-rescue path.
+        for i in range(ambiguous_pairs):
+            name = f"amb{i:08d}"
+            if rng.random() < 0.5 and islands:
+                start, end = rng.choice(islands)
+                pos1 = rng.randint(start, max(start, end - 350))
+                pos2 = rng.randint(start, max(start + 1, end - 350))
+            else:
+                while True:
+                    pos1 = rng.randint(0, length - 400)
+                    if not any(s <= pos1 < e for s, e in islands):
+                        break
+                insert = rng.randint(120, 280)
+                pos2 = pos1 + insert - read_len
+            if pos2 + read_len > length:
+                continue
+            r1 = _record(hdr, name, 0x1 | 0x40 | 0x2, pos1, ref[pos1 : pos1 + read_len], pos2)
+            r2 = _record(
+                hdr,
+                name,
+                0x1 | 0x80 | 0x10 | 0x20 | 0x2,
+                pos2,
+                ref[pos2 : pos2 + read_len],
+                pos1,
+            )
+            r1.mapping_quality = 0
+            r2.mapping_quality = 0
             out.write(r1)
             out.write(r2)
 
@@ -217,6 +263,12 @@ def stage_profile(bam: Path, ref: Path, out_dir: Path) -> dict[str, float]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pairs", type=int, default=20000)
+    parser.add_argument(
+        "--ambiguous-pairs",
+        type=int,
+        default=0,
+        help="append N both-mates-MAPQ-0 templates exercising joint rescue",
+    )
     parser.add_argument("--threads", default="1,2,4")
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument("--reference-length", type=int, default=2_000_000)
@@ -237,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[bench] building BAM ({args.pairs:,} pairs) ...")
     t0 = time.perf_counter()
-    build_bam(bam_path, ref, args.pairs, args.seed + 1)
+    build_bam(bam_path, ref, args.pairs, args.seed + 1, ambiguous_pairs=args.ambiguous_pairs)
     print(f"[bench] BAM built in {time.perf_counter() - t0:.1f}s")
 
     thread_list = [int(t) for t in args.threads.split(",")]
@@ -287,7 +339,12 @@ def main(argv: list[str] | None = None) -> int:
         "",
         f"- pairs: {args.pairs:,}, reference: {args.reference_length:,} bp, "
         f"chunk size: {args.chunk_size}",
-        "- input: 20% repeat-island pairs, 2% both-unmapped templates, 0.2%/base SNVs",
+        "- input: 20% repeat-island pairs, 2% both-unmapped templates, 0.2%/base SNVs"
+        + (
+            f", {args.ambiguous_pairs:,} both-mates-MAPQ-0 rescue templates"
+            if args.ambiguous_pairs
+            else ""
+        ),
         "",
         "## Scaling",
         "",

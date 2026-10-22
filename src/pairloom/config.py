@@ -47,7 +47,9 @@ class PairLoomConfig:
     status_tag: str = "ZC"
     min_base_quality: int = 20
     min_mapq: int = 20
-    min_overlap: int = 10
+    #: 0 explicitly allows adjacent (zero-overlap) joining; an uncovered
+    #: fragment base still rejects the merge (``fragment_gap``).
+    min_overlap: int = 0
     conflict_policy: ConflictPolicy = "quality"
     min_quality_difference: int = 5
     max_consensus_quality: int = 60
@@ -65,6 +67,9 @@ class PairLoomConfig:
     sort_output: bool = False
     index_output: bool = False
     force_mapq60_exact: bool = False
+    #: Joint low-MAPQ pair rescue across references (default on; the CLI
+    #: exposes it as the ``--no-rescue`` opt-out).
+    rescue_enabled: bool = True
     force: bool = False
     debug: bool = False
     # Internal tuning knobs (documented; not CLI-facing).
@@ -108,7 +113,7 @@ class PairLoomConfig:
                 "characters ([A-Za-z][A-Za-z0-9])"
             )
         _require_positive(self.threads, "threads")
-        _require_positive(self.min_overlap, "min_overlap")
+        _require_non_negative(self.min_overlap, "min_overlap")
         _require_positive(self.max_candidates_per_read, "max_candidates_per_read")
         _require_positive(self.realign_window, "realign_window")
         _require_positive(self.max_pair_evaluations, "max_pair_evaluations")

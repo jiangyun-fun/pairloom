@@ -25,16 +25,24 @@ from typing import Any
 import pysam
 
 from pairloom import __version__
-from pairloom.alignment import Placement, build_read_structure, expand_reference_matches
+from pairloom.alignment import (
+    Placement,
+    build_read_structure,
+    expand_reference_matches,
+    revcomp,
+)
 from pairloom.candidates import discover_candidates, normalize_record_cigar, single_read_leftmost
-from pairloom.cigarops import compute_md_nm
+from pairloom.cigarops import compute_md_nm, reverse_cigar
 from pairloom.classify import (
     BOTH_ALIGNED,
     LEFT_ALIGNED_ONLY,
     MERGEABLE,
     NEITHER_ALIGNED,
+    RESCUE_TAG,
+    RESCUE_VALUE,
     RIGHT_ALIGNED_ONLY,
     StatsCounter,
+    assign_rescue_tag,
     assign_status_tag,
 )
 from pairloom.config import STALE_TAGS_REMOVED, PairLoomConfig
@@ -45,7 +53,7 @@ from pairloom.exceptions import (
     WorkerError,
 )
 from pairloom.mapq import adjusted_mapq
-from pairloom.merge import MergeSuccess, try_merge
+from pairloom.merge import MergeFailure, try_merge
 from pairloom.overlap import analyze_overlap
 from pairloom.pairing import select_pair
 from pairloom.parquetout import DisagreementAggregator, write_read_stats_parquet
@@ -57,6 +65,7 @@ from pairloom.records import (
     open_input_bam,
     split_primaries,
 )
+from pairloom.rescue import STATUS_RESCUED, RescuePlacement, rescue_eligible, rescue_pair
 from pairloom.validate import validate_paths
 
 # Best-effort close during error rollback is intentional (never suppresses
@@ -105,6 +114,9 @@ class _WorkerState:
             max_bases=cfg.reference_cache_bases,
         )
         self.ref_names: list[str] = [sq["SN"] for sq in (header.to_dict().get("SQ") or [])]
+        #: Reverse mapping for rescue's global search: reference FASTA names
+        #: that the BAM header can express as output placements.
+        self.tid_by_name: dict[str, int] = {name: tid for tid, name in enumerate(self.ref_names)}
 
     def contig(self, tid: int) -> str:
         try:
@@ -268,6 +280,8 @@ def _both_mapped(
     observations: list[tuple[int, int, str, str, bool, bool]] = []
     if r1.reference_id != r2.reference_id:
         # Cross-contig pairs keep their adjusted records; no overlap analysis.
+        if rescue_eligible("different_contig", orig_mapq1, orig_mapq2, cfg):
+            return _attempt_rescue(r1, r2, cands1, cands2, others, observations, state)
         return None, BOTH_ALIGNED, "different_contig", observations
 
     struct1 = build_read_structure(r1)
@@ -297,10 +311,67 @@ def _both_mapped(
     outcome = try_merge(
         struct1, struct2, cfg, has_non_primary=bool(others), merged_mapq=merged_mapq
     )
-    if isinstance(outcome, MergeSuccess):
-        merged_record = _build_merged_record(r1.query_name, outcome, contig, state)
-        return merged_record.to_string(), MERGEABLE, None, observations
-    return None, BOTH_ALIGNED, outcome.reason, observations
+    if isinstance(outcome, MergeFailure):
+        if rescue_eligible(outcome.reason, orig_mapq1, orig_mapq2, cfg):
+            return _attempt_rescue(r1, r2, cands1, cands2, others, observations, state)
+        return None, BOTH_ALIGNED, outcome.reason, observations
+    merged_record = _build_merged_record(r1.query_name, outcome, contig, state)
+    return merged_record.to_string(), MERGEABLE, None, observations
+
+
+def _attempt_rescue(
+    r1: Any,
+    r2: Any,
+    cands1: Any,
+    cands2: Any,
+    others: list[Any],
+    observations: list[tuple[int, int, str, str, bool, bool]],
+    state: _WorkerState,
+) -> tuple[str | None, str, str | None, list[tuple[int, int, str, str, bool, bool]]]:
+    """Attempt joint low-MAPQ rescue for an eligible template.
+
+    Rescue relocates the mates to the unique compatible joint placement
+    (when one exists) and re-runs every merge gate except the original-MAPQ
+    eligibility gate. Returns the template's full result tuple; the reason
+    is a rescue outcome status when the pair was not relocated or a
+    post-rescue merge-rejection reason when it was.
+    """
+    outcome = rescue_pair(r1, r2, cands1, cands2, state)
+    if outcome.status != STATUS_RESCUED:
+        return None, BOTH_ALIGNED, outcome.status, observations
+    _relocate_record(r1, outcome.p1, state)
+    _relocate_record(r2, outcome.p2, state)
+    # A relocation may flip a mate's strand; the mate-reverse flags (0x20)
+    # must then follow the mates' actual strands in the output. Ordinary
+    # (unrescued) pairs never change strand, so their flags pass through.
+    for record, mate in ((r1, r2), (r2, r1)):
+        if mate.is_reverse:
+            record.flag = record.flag | 0x20
+        else:
+            record.flag = record.flag & ~0x20
+    _sync_mate_fields(r1, r2)
+    _set_proper_flag(r1, True)
+    _set_proper_flag(r2, True)
+    struct1 = build_read_structure(r1)
+    struct2 = build_read_structure(r2)
+    # Rescued pairs contribute no disagreement observations by policy: the
+    # statistics keep testing the ORIGINAL aligner MAPQ, and an eligible
+    # rescue always has a sub-threshold mate. Placements are not
+    # re-observed at the rescued locus (documented in the README).
+    merged = try_merge(
+        struct1,
+        struct2,
+        state.cfg,
+        has_non_primary=bool(others),
+        merged_mapq=0,
+        rescue_bypass_mapq=True,
+    )
+    if isinstance(merged, MergeFailure):
+        return None, BOTH_ALIGNED, merged.reason, []
+    merged_record = _build_merged_record(
+        r1.query_name, merged, state.contig(r1.reference_id), state, rescued=True
+    )
+    return merged_record.to_string(), MERGEABLE, None, []
 
 
 def _discover(record: Any, state: _WorkerState) -> Any:
@@ -401,6 +472,45 @@ def _adjust_single(record: Any, mate: Any | None, state: _WorkerState) -> None:
     _set_proper_flag(mate, False)
 
 
+def _relocate_record(record: Any, placement: RescuePlacement, state: _WorkerState) -> None:
+    """Move a record to a rescued global placement (possibly new contig/strand).
+
+    A strand change rewrites the stored sequence into the new alignment
+    orientation — SAM stores SEQ/QUAL in reference orientation for both
+    strands — by reverse-complementing SEQ, reversing QUAL, and reversing
+    the CIGAR op order (clips swap ends). The rescued placement is exact by
+    construction, so NM/MD are orientation-independent; the output MAPQ is
+    0 (a unique joint placement is not a calibrated confidence); stale
+    aligner scoring tags are removed rather than guessed at.
+    """
+    strand_changed = placement.is_reverse != bool(record.is_reverse)
+    if strand_changed:
+        seq = record.query_sequence
+        if seq is None:  # pragma: no cover - discovery fails earlier on missing SEQ
+            raise DataInvariantError(f"record {record.query_name!r} has no SEQ to relocate")
+        quals = record.query_qualities
+        record.query_sequence = revcomp(seq, f"rescue of {record.query_name!r}")
+        # pysam's query_sequence setter drops query_qualities; restore them
+        # in the new orientation (their order follows the stored sequence).
+        if quals is not None:
+            record.query_qualities = quals[::-1]
+        record.cigartuples = list(reverse_cigar(tuple(record.cigartuples or ())))
+    record.reference_id = placement.tid
+    record.reference_start = placement.pos0
+    if placement.is_reverse:
+        record.flag = record.flag | 0x10
+    else:
+        record.flag = record.flag & ~0x10
+    record.mapping_quality = 0
+    record.set_tag("MD", str(placement.span), value_type="Z")
+    record.set_tag("NM", 0, value_type="i")
+    for tag in STALE_TAGS_REMOVED:
+        if record.has_tag(tag):
+            # pysam (0.24) has no remove_tag(); set_tag(tag, None) deletes.
+            record.set_tag(tag, None)
+    assign_rescue_tag(record)
+
+
 def _sync_mate_fields(r1: Any, r2: Any) -> None:
     """Refresh mate coordinates, reciprocal MQ, and TLEN after adjustment."""
     r1.next_reference_id = r2.reference_id
@@ -449,6 +559,7 @@ def _build_merged_record(
     merged: Any,
     contig: str,
     state: _WorkerState,
+    rescued: bool = False,
 ) -> Any:
     """Create the single consensus BAM record for a merged pair."""
     record = pysam.AlignedSegment(state.header)
@@ -464,6 +575,10 @@ def _build_merged_record(
     record.next_reference_start = -1
     record.template_length = 0
     record.set_tag(state.cfg.status_tag, MERGEABLE, value_type="Z")
+    if rescued:
+        # Jointly rescued pairs: output MAPQ 0 (passed by the caller) plus
+        # the rescue marker so downstream tools can tell them apart.
+        record.set_tag(RESCUE_TAG, RESCUE_VALUE, value_type="i")
     if merged.read_group is not None:
         record.set_tag("RG", merged.read_group, value_type="Z")
     ref_end = merged.start0 + _merged_ref_len(merged.cigar)

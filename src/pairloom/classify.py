@@ -34,6 +34,12 @@ CLASSIFICATION_ORDER: tuple[str, ...] = (
 
 _KNOWN = frozenset(CLASSIFICATION_ORDER)
 
+#: Fixed diagnostic tag marking records whose placement came from joint
+#: low-MAPQ rescue (``ZR:i:1``). Distinct from ``--status-tag`` so the
+#: classification contract stays untouched.
+RESCUE_TAG = "ZR"
+RESCUE_VALUE = 1
+
 
 class StatsCounter:
     """Integer counters for the six classification categories."""
@@ -86,3 +92,20 @@ def assign_status_tag(record: Any, cfg: PairLoomConfig, classification: str) -> 
                 "--status-tag."
             )
     record.set_tag(tag, classification, value_type="Z")
+
+
+def assign_rescue_tag(record: Any) -> None:
+    """Mark one record as jointly rescued (``ZR:i:1``).
+
+    A pre-existing ``ZR`` value other than the rescue marker is treated as
+    unrelated data and fails loudly, mirroring the status-tag policy.
+    """
+    if record.has_tag(RESCUE_TAG):
+        existing = record.get_tag(RESCUE_TAG)
+        if existing != RESCUE_VALUE:
+            raise ConfigurationError(
+                f"read {record.query_name!r} already carries tag {RESCUE_TAG} with "
+                f"unrelated value {existing!r}; PairLoom does not silently "
+                "overwrite it."
+            )
+    record.set_tag(RESCUE_TAG, RESCUE_VALUE, value_type="i")

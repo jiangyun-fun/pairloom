@@ -70,7 +70,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--realign-window",
         type=int,
         default=500,
-        help="max reference window for candidate sliding per side (default 500 bp)",
+        help=(
+            "max reference window for candidate sliding per side (default 500 bp); "
+            "never bounds joint-rescue uniqueness, which searches the whole reference"
+        ),
+    )
+    pair.add_argument(
+        "--no-rescue",
+        action="store_true",
+        help=(
+            "disable joint low-MAPQ pair rescue (default: enabled; see the README's rescue section)"
+        ),
     )
     pair.add_argument(
         "--max-pair-evaluations",
@@ -103,7 +113,13 @@ def build_parser() -> argparse.ArgumentParser:
     qual.add_argument("--min-base-quality", type=int, default=20, help="default 20")
     qual.add_argument("--min-mapq", type=int, default=20, help="default 20")
     qual.add_argument(
-        "--min-overlap", type=int, default=10, help="min aligned overlap (default 10)"
+        "--min-overlap",
+        type=int,
+        default=0,
+        help=(
+            "min aligned overlap in reference bases (default 0; 0 explicitly "
+            "allows adjacent joining of mates covering a continuous fragment)"
+        ),
     )
     qual.add_argument(
         "--conflict-policy",
@@ -214,6 +230,7 @@ def build_config(args: argparse.Namespace) -> PairLoomConfig:
         sort_output=sort_output,
         index_output=args.index_output,
         force_mapq60_exact=args.force_mapq60_exact,
+        rescue_enabled=not args.no_rescue,
         force=args.force,
         debug=args.debug,
         max_aggregation_records=args.max_aggregation_records,
