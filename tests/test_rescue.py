@@ -491,10 +491,139 @@ class TestScanPrimitives:
         fx.__post_init__()
         refcache = ReferenceCache(fx.ref_path, max_contigs=1, max_bases=1)
         try:
-            hits = _scan_contig(refcache, "big", len(seq), "TGCA")
+            # The scan is a generator: consumers may stop early without
+            # materializing the whole hit list.
+            scan = _scan_contig(refcache, "big", len(seq), "TGCA")
+            assert iter(scan) is scan
+            hits = list(scan)
         finally:
             refcache.close()
         assert hits == planted
+
+    def test_occurrence_scan_bounded_at_cap_plus_one(self, fx) -> None:
+        """Repetitive contigs allocate at most cap + 1 candidates (review 6.1).
+
+        Before the fix, the scan materialized every hit of a contig/probe
+        before the cap was checked: 19,999 placements on a 20 kb poly-A
+        reference with cap 10.
+        """
+        from pairloom.pipeline import _WorkerState
+        from pairloom.rescue import _contig_keys, _global_occurrences
+
+        fx.ref_seqs = {"poly": "A" * 20_000}
+        fx.__post_init__()
+        cfg = PairLoomConfig(
+            input_path=fx.ref_path.with_suffix(".bam"),
+            reference_path=fx.ref_path,
+            mode="merge",
+            merged_bam=fx.ref_path.with_suffix(".m.bam"),
+            unmerged_bam=fx.ref_path.with_suffix(".u.bam"),
+            disagreement_parquet=fx.ref_path.with_suffix(".d.parquet"),
+            read_stats_parquet=fx.ref_path.with_suffix(".s.parquet"),
+        )
+        header = pysam.AlignmentHeader.from_dict(fx.header_dict())
+        state = _WorkerState(cfg, header)
+        try:
+            occurrences, truncated = _global_occurrences("AA", False, 2, state, _contig_keys(state))
+        finally:
+            state.refcache.close()
+        assert truncated is True
+        assert len(occurrences) == cfg.max_candidates_per_read + 1
+
+
+class TestOffHeaderContigs:
+    def _subset_header_bam(self, fx, records: list, keep: tuple[str, ...]) -> None:
+        """Write records under a header listing only ``keep`` contigs."""
+        header = fx.header_dict()
+        header["SQ"] = [sq for sq in header["SQ"] if sq["SN"] in keep]
+        hobj = pysam.AlignmentHeader.from_dict(header)
+        path = fx.tmp_path / "subset_header.bam"
+        with pysam.AlignmentFile(str(path), "wb", header=hobj) as f:
+            for rec in records:
+                f.write(rec)
+        fx.last_bam = path
+
+    def test_fasta_only_duplicate_blocks_uniqueness(self, fx, capsys) -> None:
+        """Off-header reference contigs count against uniqueness (review 6.3).
+
+        The FASTA carries a second AACC copy (`dup`) that the BAM header
+        does not list. The pair is ambiguous on the whole reference, so no
+        unique rescue may be claimed for seq1.
+        """
+        pair = build_pair(
+            fx,
+            {"seq1": "AACC", "seq2": "AATT", "dup": "AACC"},
+            "d",
+            ("seq2", 0, False),
+            ("seq1", 2, True),
+        )
+        self._subset_header_bam(fx, pair, keep=("seq1", "seq2"))
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        assert fx.read_bam(out["merged_bam"]) == []
+        unmerged = fx.read_bam(out["unmerged_bam"])
+        assert [(r.reference_name, r.reference_start) for r in unmerged] == [
+            ("seq2", 0),
+            ("seq1", 2),
+        ]
+        assert all(not r.has_tag("ZR") for r in unmerged)
+        assert reason_summary(capsys) == {"rescue_ambiguous": 1}
+
+    def test_unique_off_header_pair_not_rescued(self, fx, capsys) -> None:
+        """A unique joint placement on an off-header contig is unplaceable.
+
+        seq1 (the only header contig) carries both primaries but places
+        them 1,204 bp apart — beyond the default fragment bound — so the
+        only compatible joint placement lives on the off-header seqX=AACC.
+        Nothing placeable exists, so rescue reports no compatible pair and
+        the records keep their original loci.
+        """
+        seq1 = "AA" + "GACT" * 300 + "CC"
+        pair = build_pair(
+            fx, {"seq1": seq1, "seqX": "AACC"}, "o", ("seq1", 0, False), ("seq1", 1202, True)
+        )
+        self._subset_header_bam(fx, pair, keep=("seq1",))
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        assert fx.read_bam(out["merged_bam"]) == []
+        unmerged = fx.read_bam(out["unmerged_bam"])
+        assert [(r.reference_start) for r in unmerged] == [0, 1202]
+        assert all(not r.has_tag("ZR") for r in unmerged)
+        assert reason_summary(capsys) == {"rescue_no_compatible_pair": 1}
+
+
+class TestNonPrimaryGuard:
+    def test_cross_contig_secondary_blocks_rescue(self, fx, capsys) -> None:
+        """Non-primary records exclude a template from rescue everywhere (review 6.2).
+
+        On the cross-contig path no merge gate runs before rescue, so the
+        exclusion must be enforced up front: the primaries may not move
+        (no ZR, original loci) while their secondary stays behind pointing
+        at an abandoned locus.
+        """
+        pair = build_pair(fx, CASE_A, "s", ("seq2", 0, False), ("seq1", 2, True))
+        secondary = fx.make_record(
+            "s",
+            0x1 | 0x40 | 0x100,
+            0,
+            "2M",
+            "AA",
+            mapq=0,
+            contig="seq2",
+            mate_contig="seq1",
+            mate_pos=2,
+        )
+        fx.write_bam_and_set([*pair, secondary])
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        assert fx.read_bam(out["merged_bam"]) == []
+        unmerged = fx.read_bam(out["unmerged_bam"])
+        assert len(unmerged) == 3
+        by_flag = {r.flag & 0xC0: r for r in unmerged if not r.flag & 0x100}
+        assert (by_flag[0x40].reference_name, by_flag[0x40].reference_start) == ("seq2", 0)
+        assert (by_flag[0x80].reference_name, by_flag[0x80].reference_start) == ("seq1", 2)
+        assert all(not r.has_tag("ZR") for r in unmerged)
+        assert reason_summary(capsys) == {"different_contig": 1}
 
 
 class TestIndependentValidation:

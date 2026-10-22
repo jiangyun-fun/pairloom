@@ -6,8 +6,9 @@ primary placements carry no usable joint evidence. Rescue re-places the
 template jointly:
 
 - both mates' exact-match ungapped aligned blocks are searched over the
-  WHOLE reference (every BAM-header contig, both strands), not just the
-  original contig and window;
+  WHOLE reference — every FASTA contig, both strands. Occurrences on
+  contigs the BAM header cannot express count toward ambiguity and the
+  candidate cap but never host an output placement;
 - placements are combined into candidate pairs under the same constraints
   as ordinary selection (same reference, library orientation model,
   fragment-length bounds);
@@ -24,14 +25,16 @@ the ``--realign-window`` of ordinary sliding never bounds them.
 Search cost: one C-speed substring scan of the reference per rescued mate
 block (chunked at ``_SCAN_CHUNK`` fetches so memory stays bounded on large
 contigs; contigs at or below the chunk size are fetched whole once). The
-scan aborts as soon as the occurrence cap is exceeded — the outcome
-(truncated) is already decided. Only templates that failed the placement
-checks pay this cost; ``--candidate-source bam`` and ``--no-rescue`` avoid
-it entirely.
+occurrence scan is a generator and stops at the first occurrence past
+``--max-candidates-per-read``, so memory holds at most cap + 1 candidate
+placements per mate however repetitive the reference is; only templates
+that failed the placement checks pay this cost, and
+``--candidate-source bam`` and ``--no-rescue`` avoid it entirely.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -85,17 +88,28 @@ class RescueOutcome:
     p2: RescuePlacement | None = None
 
 
-def rescue_eligible(failure_reason: str, orig_mapq1: int, orig_mapq2: int, cfg: Any) -> bool:
+def rescue_eligible(
+    failure_reason: str,
+    orig_mapq1: int,
+    orig_mapq2: int,
+    cfg: Any,
+    has_non_primary: bool = False,
+) -> bool:
     """True when the failed template should attempt joint rescue.
 
     Requires a placement-level failure, at least one mate below the
     original-MAPQ gate (high-MAPQ discordant pairs keep their placements —
     their discordance is evidence, not ambiguity), reference-source
-    discovery, and rescue not disabled.
+    discovery, and rescue not disabled. Templates carrying non-primary
+    records are excluded here — before any search or record mutation — so
+    their secondaries never end up pointing at an abandoned locus; this
+    guard covers the cross-contig path too, where no merge gate runs
+    first.
     """
     return (
         cfg.rescue_enabled
         and cfg.candidate_source == "reference"
+        and not has_non_primary
         and failure_reason in TRIGGER_REASONS
         and (orig_mapq1 < cfg.min_mapq or orig_mapq2 < cfg.min_mapq)
     )
@@ -125,25 +139,56 @@ def rescue_pair(r1: Any, r2: Any, cands1: Any, cands2: Any, state: Any) -> Rescu
         spans.append(current.ref_span)
         strands.append(bool(read.is_reverse))
 
-    occ1, truncated = _global_occurrences(blocks[0], strands[0], spans[0], state)
+    # Contig keys: header contigs keep their BAM tid; contigs the header
+    # cannot express get unique negative keys so pair enumeration stays
+    # exact across ALL reference contigs — off-header occurrences count
+    # toward ambiguity and the cap, they just never host a placement.
+    keys = _contig_keys(state)
+    occ1, truncated = _global_occurrences(blocks[0], strands[0], spans[0], state, keys)
     if truncated:
         return RescueOutcome(STATUS_TRUNCATED)
-    occ2, truncated = _global_occurrences(blocks[1], strands[1], spans[1], state)
+    occ2, truncated = _global_occurrences(blocks[1], strands[1], spans[1], state, keys)
     if truncated:
         return RescueOutcome(STATUS_TRUNCATED)
 
     pairs, complete = _compatible_pairs(occ1, occ2, spans, state.cfg)
     if not complete:
         return RescueOutcome(STATUS_TRUNCATED)
-    if not pairs:
+    if len(pairs) != 1:
+        return RescueOutcome(STATUS_AMBIGUOUS if pairs else STATUS_NO_PAIR)
+    p1, p2 = pairs[0]
+    if p1.tid < 0 or p2.tid < 0:
+        # Unique compatible joint placement, but on a contig the BAM header
+        # cannot express: nothing placeable, so no rescue.
         return RescueOutcome(STATUS_NO_PAIR)
-    if len(pairs) > 1:
-        return RescueOutcome(STATUS_AMBIGUOUS)
-    return RescueOutcome(STATUS_RESCUED, pairs[0][0], pairs[0][1])
+    return RescueOutcome(STATUS_RESCUED, p1, p2)
+
+
+def _contig_keys(state: Any) -> dict[str, int]:
+    """Reference-contig identity for the joint search.
+
+    BAM-header contigs map to their tid (>= 0); every other FASTA contig
+    gets a unique negative key in reference order (BAM tids are never
+    negative, so the spaces cannot collide).
+    """
+    keys: dict[str, int] = {}
+    foreign = 0
+    for name in state.refcache.contig_names:
+        tid = state.tid_by_name.get(name)
+        if tid is not None:
+            keys[name] = tid
+        else:
+            foreign += 1
+            keys[name] = -foreign
+    return keys
 
 
 def _global_occurrences(
-    block: str, record_reverse: bool, span: int, state: Any
+    block: str,
+    record_reverse: bool,
+    span: int,
+    state: Any,
+    keys: dict[str, int],
 ) -> tuple[list[RescuePlacement], bool]:
     """All placements of one mate's aligned block (both strands), globally.
 
@@ -156,48 +201,46 @@ def _global_occurrences(
     occurrences of ``revcomp(raw)``. Labelling the probes the other way
     would place reads on strands their sequence cannot support.
 
-    Returns ``(occurrences, truncated)``; ``truncated`` means the count
-    exceeded ``--max-candidates-per-read`` (the scan stopped early — the
-    rescue outcome is already decided and uniqueness can never be claimed).
+    Returns ``(occurrences, truncated)``. The scan stops at the FIRST
+    occurrence past ``--max-candidates-per-read``, so the returned list —
+    and the memory it costs — is bounded at cap + 1 entries no matter how
+    repetitive the reference is. ``truncated`` means the count exceeded
+    the cap, so uniqueness can never be claimed.
     """
     cap = state.cfg.max_candidates_per_read
     raw = revcomp(block, "rescue block") if record_reverse else block
     probes = ((raw, False), (revcomp(raw, "rescue block"), True))
     occurrences: list[RescuePlacement] = []
     for name in state.refcache.contig_names:
-        tid = state.tid_by_name.get(name)
-        if tid is None:
-            # Reference contigs absent from the BAM header cannot hold
-            # expressible output placements; the pipeline ignores them
-            # everywhere else, and so does rescue.
-            continue
+        key = keys[name]
         contig_len = state.refcache.length(name)
         for probe, is_reverse in probes:
             for pos in _scan_contig(state.refcache, name, contig_len, probe):
-                occurrences.append(RescuePlacement(tid, pos, is_reverse, span))
-            if len(occurrences) > cap:
-                return occurrences, True
+                occurrences.append(RescuePlacement(key, pos, is_reverse, span))
+                if len(occurrences) > cap:
+                    return occurrences, True
     return occurrences, False
 
 
-def _scan_contig(refcache: Any, name: str, contig_len: int, probe: str) -> list[int]:
-    """Ascending start positions of ``probe`` in one contig, chunked fetches.
+def _scan_contig(refcache: Any, name: str, contig_len: int, probe: str) -> Iterator[int]:
+    """Yield ascending start positions of ``probe`` in one contig.
 
-    Chunks overlap by ``len(probe) - 1`` so occurrences spanning a chunk
-    boundary are found exactly once (positions at or beyond the next
-    chunk's base are deferred to it).
+    A generator, so a capped consumer can stop without materializing the
+    full hit list of a repetitive contig. Fetches are chunked at
+    ``_SCAN_CHUNK`` with a ``len(probe) - 1`` overlap so occurrences
+    spanning a chunk boundary are found exactly once (positions at or
+    beyond the next chunk's base are deferred to it).
     """
     span = len(probe)
     if span > contig_len:
-        return []
-    hits: list[int] = []
+        return
     if contig_len <= _SCAN_CHUNK:
         seq = refcache.fetch(name, 0, contig_len)
         idx = seq.find(probe)
         while idx != -1:
-            hits.append(idx)
+            yield idx
             idx = seq.find(probe, idx + 1)
-        return hits
+        return
     base = 0
     while base + span <= contig_len:
         window_end = min(base + _SCAN_CHUNK, contig_len)
@@ -207,12 +250,11 @@ def _scan_contig(refcache: Any, name: str, contig_len: int, probe: str) -> list[
             pos = base + idx
             if pos >= window_end:
                 break
-            hits.append(pos)
+            yield pos
             idx = chunk.find(probe, idx + 1)
         if window_end >= contig_len:
             break
         base = window_end
-    return hits
 
 
 def _compatible_pairs(

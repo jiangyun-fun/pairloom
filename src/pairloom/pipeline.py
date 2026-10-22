@@ -280,7 +280,9 @@ def _both_mapped(
     observations: list[tuple[int, int, str, str, bool, bool]] = []
     if r1.reference_id != r2.reference_id:
         # Cross-contig pairs keep their adjusted records; no overlap analysis.
-        if rescue_eligible("different_contig", orig_mapq1, orig_mapq2, cfg):
+        if rescue_eligible(
+            "different_contig", orig_mapq1, orig_mapq2, cfg, has_non_primary=bool(others)
+        ):
             return _attempt_rescue(r1, r2, cands1, cands2, others, observations, state)
         return None, BOTH_ALIGNED, "different_contig", observations
 
@@ -312,7 +314,9 @@ def _both_mapped(
         struct1, struct2, cfg, has_non_primary=bool(others), merged_mapq=merged_mapq
     )
     if isinstance(outcome, MergeFailure):
-        if rescue_eligible(outcome.reason, orig_mapq1, orig_mapq2, cfg):
+        if rescue_eligible(
+            outcome.reason, orig_mapq1, orig_mapq2, cfg, has_non_primary=bool(others)
+        ):
             return _attempt_rescue(r1, r2, cands1, cands2, others, observations, state)
         return None, BOTH_ALIGNED, outcome.reason, observations
     merged_record = _build_merged_record(r1.query_name, outcome, contig, state)

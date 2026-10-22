@@ -120,8 +120,11 @@ least one mate's **original** MAPQ is below `--min-mapq`, rescue runs
 rescues):
 
 1. both mates' exact-match ungapped aligned blocks are searched over every
-   reference contig present in the BAM header, on both strands (only
-   FASTA contigs the header can express are considered);
+   reference contig, on both strands. Occurrences on contigs the BAM
+   header cannot express count toward ambiguity and the candidate cap but
+   never host an output placement: a second equally supported copy on an
+   off-header contig makes the pair `rescue_ambiguous`, and a joint
+   placement that exists only off-header yields `rescue_no_compatible_pair`;
 2. placements are combined into candidate joint placements under the same
    constraints as ordinary pair selection — same contig, the
    `--library-orientation` model, `--min/max-fragment-length`;
@@ -154,20 +157,23 @@ Policy details:
   population is unchanged by merge eligibility.
 - **Search cost**: rescue pays one C-speed substring scan of the reference
   per rescued mate block (fetches chunked at 1 Mbp, so memory stays
-  bounded on large contigs; the scan aborts early once the occurrence cap
-  is exceeded, since truncation already decides the outcome). Only
-  trigger-eligible templates pay it. At genome scale this linear-per-pair
-  cost dominates; batched multi-pattern indexing is future work, and
-  `--no-rescue` / `--candidate-source bam` are the escape hatches.
+  bounded on large contigs). The occurrence scan is a generator that stops
+  at the first occurrence past the candidate cap, so at most
+  `cap + 1` candidate placements are held per mate however repetitive the
+  reference is. Only trigger-eligible templates pay this cost. At genome
+  scale this linear-per-pair cost dominates; batched multi-pattern
+  indexing is future work, and `--no-rescue` / `--candidate-source bam`
+  are the escape hatches.
 - **Records**: a rescued placement may change contig and strand. SEQ/QUAL
   are rewritten into the new alignment orientation (reverse complement,
   reversed qualities, reversed CIGAR op order — clips swap ends);
   0x10/0x20 strand flags, 0x2 proper-pair, RNEXT/PNEXT, and TLEN are
   refreshed; NM/MD are recomputed (`NM:i:0` / `MD:<span>`, exact by
   construction); stale scoring tags are removed; read groups are kept.
-  Templates carrying secondary/supplementary records are never rescued
-  (their non-primary records keep pointing at the old locus, and those
-  records pass through untouched, as before).
+  Templates carrying secondary/supplementary records are never rescued —
+  the exclusion is enforced before any search or record mutation, on the
+  cross-contig path as well — and those records pass through untouched,
+  as before.
 - Mismatch- or indel-bearing mates never rescue
   (`rescue_unsupported_alignment`); rescue is deliberately at least as
   conservative as windowed sliding.
@@ -460,7 +466,7 @@ the no-rescue path (see `benchmarks/results/RESULTS.md`).
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (172 tests, all 35 spec scenarios)
+pixi run test          # full pytest suite (176 tests, all 35 spec scenarios)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark
