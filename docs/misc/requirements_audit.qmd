@@ -732,3 +732,29 @@ Packages: None.
 Environments: none.
 
 Git: 1 docs commit, not pushed.
+
+## Explain the pairmerge CLI naming
+
+```
+level: low
+date: 2026-10-22
+```
+
+### description
+
+Explain why the executable is named `pairmerge` while the package is PairLoom, grounded in the repo's earliest records rather than guesswork.
+
+### result
+
+1. Answered: the pairing (package PairLoom, command pairmerge) is fixed by the first implementation plan and the scaffold commit; the command names the operation, the package names the project.
+
+### change
+
+Files:
+- Updated: `docs/misc/requirements_audit.qmd` (this entry)
+
+Packages: None.
+
+Environments: none.
+
+Git: 1 docs commit, not pushed.
