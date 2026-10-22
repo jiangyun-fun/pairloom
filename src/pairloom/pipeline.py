@@ -32,20 +32,18 @@ from pairloom.alignment import (
     revcomp,
 )
 from pairloom.candidates import discover_candidates, normalize_record_cigar, single_read_leftmost
-from pairloom.cigarops import compute_md_nm, reverse_cigar
+from pairloom.cigarops import CIGAR_H, CIGAR_N, compute_md_nm, reverse_cigar
 from pairloom.classify import (
     BOTH_ALIGNED,
     LEFT_ALIGNED_ONLY,
     MERGEABLE,
     NEITHER_ALIGNED,
-    RESCUE_TAG,
-    RESCUE_VALUE,
     RIGHT_ALIGNED_ONLY,
     StatsCounter,
     assign_rescue_tag,
     assign_status_tag,
 )
-from pairloom.config import STALE_TAGS_REMOVED, PairLoomConfig
+from pairloom.config import RESCUE_TAG, RESCUE_VALUE, STALE_TAGS_REMOVED, PairLoomConfig
 from pairloom.exceptions import (
     DataInvariantError,
     OutputError,
@@ -281,7 +279,11 @@ def _both_mapped(
     if r1.reference_id != r2.reference_id:
         # Cross-contig pairs keep their adjusted records; no overlap analysis.
         if rescue_eligible(
-            "different_contig", orig_mapq1, orig_mapq2, cfg, has_non_primary=bool(others)
+            "different_contig",
+            orig_mapq1,
+            orig_mapq2,
+            cfg,
+            shape_blocked=_rescue_shape_blocked(r1, r2, others),
         ):
             return _attempt_rescue(r1, r2, cands1, cands2, others, observations, state)
         return None, BOTH_ALIGNED, "different_contig", observations
@@ -315,12 +317,39 @@ def _both_mapped(
     )
     if isinstance(outcome, MergeFailure):
         if rescue_eligible(
-            outcome.reason, orig_mapq1, orig_mapq2, cfg, has_non_primary=bool(others)
+            outcome.reason,
+            orig_mapq1,
+            orig_mapq2,
+            cfg,
+            shape_blocked=_rescue_shape_blocked(r1, r2, others),
         ):
             return _attempt_rescue(r1, r2, cands1, cands2, others, observations, state)
         return None, BOTH_ALIGNED, outcome.reason, observations
     merged_record = _build_merged_record(r1.query_name, outcome, contig, state)
     return merged_record.to_string(), MERGEABLE, None, observations
+
+
+def _rescue_shape_blocked(r1: Any, r2: Any, others: list[Any]) -> bool:
+    """Placement-independent merge exclusions, checked before any rescue search.
+
+    These are the gates ``try_merge`` applies before its placement-level
+    reasons on the same-contig path: non-primary records, hard clips,
+    missing qualities, reference skips, and conflicting read groups. The
+    cross-contig path reaches rescue without running any merge gate, so
+    the exclusions are enforced here uniformly — a template failing one
+    keeps its original placements on every path.
+    """
+    if others:
+        return True
+    for record in (r1, r2):
+        cigar = record.cigartuples or ()
+        if any(op in (CIGAR_H, CIGAR_N) for op, _length in cigar):
+            return True
+        if record.query_qualities is None:
+            return True
+    rg1 = r1.get_tag("RG") if r1.has_tag("RG") else None
+    rg2 = r2.get_tag("RG") if r2.has_tag("RG") else None
+    return rg1 is not None and rg2 is not None and rg1 != rg2
 
 
 def _attempt_rescue(

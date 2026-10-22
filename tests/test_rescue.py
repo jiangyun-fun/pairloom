@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import shutil
 import subprocess
+from pathlib import Path
 
 import pysam
 import pytest
@@ -624,6 +625,85 @@ class TestNonPrimaryGuard:
         assert (by_flag[0x80].reference_name, by_flag[0x80].reference_start) == ("seq1", 2)
         assert all(not r.has_tag("ZR") for r in unmerged)
         assert reason_summary(capsys) == {"different_contig": 1}
+
+
+class TestShapeGate:
+    """Placement-independent exclusions block rescue on every path (review 7.1).
+
+    try_merge applies these gates before its placement-level reasons on
+    the same-contig path, so those templates never rescue there; the
+    cross-contig path reaches rescue without any merge gate and must
+    enforce the same exclusions up front.
+    """
+
+    def _assert_not_relocated(self, fx, out, capsys, reason: str) -> None:
+        assert fx.read_bam(out["merged_bam"]) == []
+        unmerged = fx.read_bam(out["unmerged_bam"])
+        assert [(r.reference_name, r.reference_start) for r in unmerged] == [
+            ("seq2", 0),
+            ("seq1", 2),
+        ]
+        assert all(not r.has_tag("ZR") for r in unmerged)
+        assert reason_summary(capsys) == {reason: 1}
+
+    def test_cross_contig_hard_clip_not_relocated(self, fx, capsys) -> None:
+        pair = build_pair(fx, CASE_A, "h", ("seq2", 0, False), ("seq1", 2, True))
+        pair[0].cigarstring = "1H2M"
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        self._assert_not_relocated(fx, out, capsys, "different_contig")
+
+    def test_cross_contig_missing_qualities_not_relocated(self, fx, capsys) -> None:
+        pair = build_pair(fx, CASE_A, "q", ("seq2", 0, False), ("seq1", 2, True))
+        pair[0].query_qualities = None
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        self._assert_not_relocated(fx, out, capsys, "different_contig")
+
+    def test_cross_contig_read_group_conflict_not_relocated(self, fx, capsys) -> None:
+        pair = build_pair(fx, CASE_A, "g", ("seq2", 0, False), ("seq1", 2, True))
+        pair[0].set_tag("RG", "rg1")
+        pair[1].set_tag("RG", "rg2")
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        self._assert_not_relocated(fx, out, capsys, "different_contig")
+
+    def test_same_contig_parity_kept(self, fx, capsys) -> None:
+        """The same-contig path must behave identically (it never rescues)."""
+        pair = build_pair(fx, CASE_A, "p", ("seq1", 0, False), ("seq1", 2, True))
+        pair[0].cigarstring = "1H2M"
+        fx.write_bam_and_set(pair)
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        unmerged = fx.read_bam(out["unmerged_bam"])
+        assert all(not r.has_tag("ZR") for r in unmerged)
+        assert reason_summary(capsys) == {"hard_clipped_mate": 1}
+
+
+class TestStatusTagReservation:
+    def test_status_tag_zr_rejected_at_validation(self) -> None:
+        """ZR is PairLoom's rescue marker and reserved (review 7.2)."""
+        with pytest.raises(ConfigurationError, match="reserved"):
+            PairLoomConfig(
+                input_path=Path("in.bam"),
+                reference_path=Path("ref.fa"),
+                mode="merge",
+                merged_bam=Path("m.bam"),
+                unmerged_bam=Path("u.bam"),
+                disagreement_parquet=Path("d.parquet"),
+                read_stats_parquet=Path("s.parquet"),
+                status_tag="ZR",
+            )
+
+    def test_cli_rejects_status_tag_zr_before_processing(self, fx) -> None:
+        """The reservation surfaces as a startup usage error (exit 2)."""
+        build_pair(fx, CASE_A, "z", ("seq2", 0, False), ("seq1", 2, True))
+        code, out = fx.run(mode="merge", extra=["--status-tag", "ZR"])
+        assert code == 2
+        assert not out["merged_bam"].exists()
 
 
 class TestIndependentValidation:

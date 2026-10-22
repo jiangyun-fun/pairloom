@@ -24,6 +24,13 @@ LIBRARY_ORIENTATIONS: tuple[str, ...] = ("fr", "rf", "ff", "rr", "any")
 # Tags that are recomputed or invalidated when PairLoom rewrites a record.
 STALE_TAGS_REMOVED: tuple[str, ...] = ("AS", "XS", "SA", "MC", "MQ", "XA")
 
+#: Fixed diagnostic tag marking records whose placement came from joint
+#: low-MAPQ pair rescue (``ZR:i:1``). Lives here so configuration
+#: validation can reserve it against ``--status-tag`` without an import
+#: cycle (classify imports config, never the reverse).
+RESCUE_TAG = "ZR"
+RESCUE_VALUE = 1
+
 #: Two-character SAM tag: first character a letter, second alphanumeric.
 _TAG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]$")
 
@@ -111,6 +118,11 @@ class PairLoomConfig:
             raise ConfigurationError(
                 f"invalid status_tag {self.status_tag!r}: must be exactly two SAM tag "
                 "characters ([A-Za-z][A-Za-z0-9])"
+            )
+        if self.status_tag == RESCUE_TAG:
+            raise ConfigurationError(
+                f"status_tag {RESCUE_TAG!r} is reserved for the joint-rescue marker "
+                "(ZR:i:1); choose another --status-tag"
             )
         _require_positive(self.threads, "threads")
         _require_non_negative(self.min_overlap, "min_overlap")

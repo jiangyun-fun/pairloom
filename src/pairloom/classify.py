@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pairloom.config import PairLoomConfig
+from pairloom.config import RESCUE_TAG, RESCUE_VALUE, PairLoomConfig
 from pairloom.exceptions import ConfigurationError
 
 TOTAL = "total"
@@ -33,12 +33,6 @@ CLASSIFICATION_ORDER: tuple[str, ...] = (
 )
 
 _KNOWN = frozenset(CLASSIFICATION_ORDER)
-
-#: Fixed diagnostic tag marking records whose placement came from joint
-#: low-MAPQ rescue (``ZR:i:1``). Distinct from ``--status-tag`` so the
-#: classification contract stays untouched.
-RESCUE_TAG = "ZR"
-RESCUE_VALUE = 1
 
 
 class StatsCounter:

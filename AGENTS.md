@@ -13,7 +13,7 @@ through pixi so the workspace env — not the ambient PATH — supplies binaries
 | Task | Command |
 | ---- | ------- |
 | Set up env (conda deps + editable install) | `pixi install` |
-| Full test suite (176 tests) | `pixi run test` |
+| Full test suite (182 tests) | `pixi run test` |
 | Stop at first failure | `pixi run test-fast` |
 | Lint (ruff check) | `pixi run lint` |
 | Format check / apply | `pixi run format` / `pixi run format-fix` |
@@ -98,12 +98,15 @@ in `pyproject.toml`. If imports suddenly stop resolving, check for
    globally-compatible joint placement with an untruncated search
    (`--max-candidates-per-read`, `--max-pair-evaluations` both gate the
    uniqueness claim), never touches mismatch/indel mates or templates
-   with non-primary records (enforced before any search or mutation,
-   cross-contig path included), searches EVERY reference contig on both
+   failing any placement-independent merge gate — non-primary records,
+   hard clips, missing qualities, reference skips, read-group conflicts
+   (enforced before any search or mutation, cross-contig path included),
+   searches EVERY reference contig on both
    strands with strand labels derived from the RAW read sequence —
    occurrences on non-header contigs count against uniqueness and the cap
    but never host placements — bounds the occurrence list at cap + 1 by
-   generator early-stop, marks rescued records `ZR:i:1`, and excludes
+   generator early-stop, marks rescued records `ZR:i:1` (the tag is
+   reserved against `--status-tag` at validation), and excludes
    rescued pairs from disagreement statistics. High-MAPQ discordant pairs
    are never rescued — their discordance is evidence, not ambiguity.
 

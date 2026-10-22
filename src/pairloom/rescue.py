@@ -93,23 +93,24 @@ def rescue_eligible(
     orig_mapq1: int,
     orig_mapq2: int,
     cfg: Any,
-    has_non_primary: bool = False,
+    shape_blocked: bool = False,
 ) -> bool:
     """True when the failed template should attempt joint rescue.
 
     Requires a placement-level failure, at least one mate below the
     original-MAPQ gate (high-MAPQ discordant pairs keep their placements —
     their discordance is evidence, not ambiguity), reference-source
-    discovery, and rescue not disabled. Templates carrying non-primary
-    records are excluded here — before any search or record mutation — so
-    their secondaries never end up pointing at an abandoned locus; this
-    guard covers the cross-contig path too, where no merge gate runs
-    first.
+    discovery, and rescue not disabled. ``shape_blocked`` summarizes the
+    placement-independent merge exclusions (non-primary records, hard
+    clips, missing qualities, reference skips, read-group conflicts),
+    computed by the pipeline and enforced here before any search or record
+    mutation — on the cross-contig path too, where no merge gate runs
+    first, so those templates keep their original loci on every path.
     """
     return (
         cfg.rescue_enabled
         and cfg.candidate_source == "reference"
-        and not has_non_primary
+        and not shape_blocked
         and failure_reason in TRIGGER_REASONS
         and (orig_mapq1 < cfg.min_mapq or orig_mapq2 < cfg.min_mapq)
     )

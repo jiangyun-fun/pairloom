@@ -170,10 +170,13 @@ Policy details:
   0x10/0x20 strand flags, 0x2 proper-pair, RNEXT/PNEXT, and TLEN are
   refreshed; NM/MD are recomputed (`NM:i:0` / `MD:<span>`, exact by
   construction); stale scoring tags are removed; read groups are kept.
-  Templates carrying secondary/supplementary records are never rescued —
-  the exclusion is enforced before any search or record mutation, on the
-  cross-contig path as well — and those records pass through untouched,
-  as before.
+  Templates failing any placement-independent merge gate are never
+  rescued — non-primary records, hard-clipped or quality-less or
+  reference-skip-bearing mates, and conflicting read groups. The
+  exclusion is enforced before any search or record mutation on every
+  path (the cross-contig path runs no merge gate, so the check happens at
+  rescue eligibility), and those records pass through untouched, as
+  before.
 - Mismatch- or indel-bearing mates never rescue
   (`rescue_unsupported_alignment`); rescue is deliberately at least as
   conservative as windowed sliding.
@@ -359,7 +362,10 @@ also covers non-paired (0x1-unset) primary records.
 primary record of a template (both mates share the value; merged records
 carry `mergeable`). A pre-existing tag value that is not a PairLoom
 classification string is treated as unrelated data: PairLoom refuses to
-overwrite it and fails loudly with a suggestion to pick another tag.
+overwrite it and fails loudly with a suggestion to pick another tag. The
+tag `ZR` is PairLoom's own joint-rescue marker and is reserved: choosing
+it as `--status-tag` is rejected at validation, before any input is
+read.
 
 ## Output integrity and failure policy
 
@@ -466,7 +472,7 @@ the no-rescue path (see `benchmarks/results/RESULTS.md`).
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (176 tests, all 35 spec scenarios)
+pixi run test          # full pytest suite (182 tests, all 35 spec scenarios)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark
