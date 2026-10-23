@@ -842,3 +842,28 @@ Files (analysis repo 20261022.bench_pairloom_vs_fastp.GO00009_S19):
 Packages: none into shared envs; Environments: new pixi workspace in the analysis repo (fastp 1.4.0, bwa-mem2 2.2.1, samtools 1.24, pysam 0.24.1, polars 2.0.0).
 
 Git: pairloom — plan commit 0829a86 and this docs commit on main, not pushed; analysis repo — dc20b94, e04be7f on main, not pushed.
+
+## Explain PairLoom's long benchmark runtime
+
+```
+level: low
+date: 2026-10-23
+```
+
+### description
+
+The user asked why PairLoom ran so long in the benchmark (32 min 18 s for 6.08M templates at 4 threads, versus 11 s for fastp and 64 s for bwa-mem2).
+
+### result
+
+1. Answered: nothing is stuck — no pairloom process was running; the 32 min matches the documented envelope (README: 2.6–4.2k pairs/s per thread; measured 3,135 pairs/s at 4 threads).
+2. Answered: decomposition on the pilot BAM — defaults 31.3 s, --no-rescue 19.0 s, --candidate-source bam 19.0 s; the rescue path costs ~39% of wall time, recovering 44 merges per 100k pairs.
+3. Verified: --no-rescue and --candidate-source bam give byte-identical outputs here (bam-source never rescues); the rest is per-template Python work, not yet line-profiled.
+
+### change
+
+Files (analysis repo): Created `results/timing_decomposition/` (4 timing files + README); Updated `report/pilot_summary.qmd` (decomposition section, re-rendered).
+
+Files (pairloom repo): Updated `docs/misc/requirements_audit.qmd` (this entry).
+
+Git: 1 docs commit in the analysis repo; this docs commit in pairloom; neither pushed.
