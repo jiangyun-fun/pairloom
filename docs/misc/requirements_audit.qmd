@@ -867,3 +867,28 @@ Files (analysis repo): Created `results/timing_decomposition/` (4 timing files +
 Files (pairloom repo): Updated `docs/misc/requirements_audit.qmd` (this entry).
 
 Git: 1 docs commit in the analysis repo; this docs commit in pairloom; neither pushed.
+
+## Explain the fastp-vs-PairLoom runtime gap
+
+```
+level: low
+date: 2026-10-23
+```
+
+### description
+
+The user noted fastp's merge stage cost only 10.8 s for the same 6.08M pairs where PairLoom took 32 min, and asked why the gap is so large.
+
+### result
+
+1. Answered: yes — 10.8 s vs 1,938 s (~180x); after removing the rescue path the gap is ~100x, which is Python interpreter overhead on per-base work, not an algorithmic fault.
+2. Verified: cProfile on the pilot BAM (1 thread, --no-rescue): analyze_overlap 25.5 s, add_observation 8.4 s/15.2M rows, dict.get 8.5 s/47M calls, record building ~19 s.
+3. Noted: part of the per-base work is output fastp does not produce — per-base observation parquet rows, quality-gated consensus policy, placement verification against the reference.
+
+### change
+
+Files (analysis repo): Created `results/timing_decomposition/profile_single_thread_no_rescue.txt`; Updated `report/pilot_summary.qmd` (line-level profile section, re-rendered).
+
+Files (pairloom repo): Updated `docs/misc/requirements_audit.qmd` (this entry), `docs/misc/next_and_recommendation.qmd` (profiling item upgraded to M with cProfile evidence).
+
+Git: docs commits in both repos, not pushed.
