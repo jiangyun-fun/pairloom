@@ -429,6 +429,31 @@ holds at most one 1 Mbp reference chunk and at most
 (the benchmark dataset) never triggers it, so the numbers above measure
 the no-rescue path (see `benchmarks/results/RESULTS.md`).
 
+Real-data reference point (GO00009 oligo pool, 6.08M templates, 21,839
+oligos x 80 bp, full-overlap pairs, rescue on, 4 threads): 173.6 s wall,
+430 MiB peak RSS — about 35k templates/s — with outputs record-identical
+to the single-threaded run and to the pre-optimization implementation
+(`benchmarks/equivalence_check.py` compares two output sets record by
+record, table by table, and done line for done line).
+
+## Rust core (`pairloom_core`)
+
+The per-base hot paths — read-structure building, consensus merging,
+overlap-observation aggregation, and MD/NM computation — run in a batched
+Rust extension (`rust/`, pyo3). It is a bit-exact port of the Python
+reference implementations, which remain the semantic authority and the
+unit-test target; `tests/test_core_equivalence.py` holds the two identical
+on a randomized corpus (structures, every merge outcome and failure
+reason, MD/NM, aggregation counts). Build and install it into the
+environment with `pixi run core` (requires cargo on PATH); the package
+imports it unconditionally, so a missing build fails loudly. Other
+performance-critical pieces — whole-contig rescue scan caches with
+occurrence memoization, discovery memoization, array-batched disagreement
+aggregation with numpy reduction, and virtual-offset chunk streaming that
+keeps records off the IPC boundary — are pure Python but follow the same
+output-identical contract, verified by the suite and the equivalence
+checker.
+
 ## Selected defaults for spec ambiguities (§15)
 
 1. Indel-bearing alignments are not slid (only exact ungapped blocks are);
@@ -445,8 +470,8 @@ the no-rescue path (see `benchmarks/results/RESULTS.md`).
    orientation-independent (`NM:i:0`, `MD:<span>`).
 5. `--max-fragment-length` defaults to 1000; `--min-overlap` to 0 (zero
    allows adjacent joining); `--min-base-quality`/`--min-mapq` to 20;
-   window 500; candidates 10; batch 65536; aggregation spill threshold
-   10^6 positions; joint rescue is enabled unless `--no-rescue`.
+   window 500; candidates 10; chunk 8192; batch 65536; aggregation spill
+   threshold 10^6 positions; joint rescue is enabled unless `--no-rescue`.
 6. Non-paired primary records classify as `left_aligned_only`.
 
 ## Known limitations

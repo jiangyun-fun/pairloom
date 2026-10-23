@@ -81,7 +81,7 @@ class PairLoomConfig:
     debug: bool = False
     # Internal tuning knobs (documented; not CLI-facing).
     max_aggregation_records: int = 1_000_000
-    chunk_size: int = 256
+    chunk_size: int = 8192
     reference_cache_contigs: int = 4
     reference_cache_bases: int = 4_000_000
 

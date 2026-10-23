@@ -14,6 +14,7 @@ format-fix = "ruff format src tests benchmarks"
 build = "python -m pip wheel --no-deps -w dist ."
 bench = "python benchmarks/benchmark.py --pairs 20000 --threads 1,2,4 --output-dir benchmarks/results"
 cli = "pairloom --help"
+core = "python rust/install_core.py"
 
 [dependencies]
 python = ">=3.12,<3.14"
@@ -33,3 +34,4 @@ pairloom = { path = ".", editable = true }
 
 [environments]
 default = ["dev"]
+

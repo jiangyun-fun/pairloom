@@ -22,17 +22,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pairloom_core as _core
 import pysam
 
 from pairloom import __version__
 from pairloom.alignment import (
     Placement,
-    build_read_structure,
     expand_reference_matches,
     revcomp,
 )
 from pairloom.candidates import discover_candidates, normalize_record_cigar, single_read_leftmost
-from pairloom.cigarops import CIGAR_H, CIGAR_N, compute_md_nm, reverse_cigar
+from pairloom.cigarops import CIGAR_H, CIGAR_N, reverse_cigar
 from pairloom.classify import (
     BOTH_ALIGNED,
     LEFT_ALIGNED_ONLY,
@@ -51,10 +52,8 @@ from pairloom.exceptions import (
     WorkerError,
 )
 from pairloom.mapq import adjusted_mapq
-from pairloom.merge import MergeFailure, try_merge
-from pairloom.overlap import analyze_overlap
 from pairloom.pairing import select_pair
-from pairloom.parquetout import DisagreementAggregator, write_read_stats_parquet
+from pairloom.parquetout import FastDisagreementAccumulator, write_read_stats_parquet
 from pairloom.records import (
     check_pair_flags,
     detect_sort_order,
@@ -84,8 +83,9 @@ class TemplateResult:
     merge_reason: str | None
     #: (stream name, SAM line) pairs in deterministic template order
     out_lines: list[tuple[str, str]] = field(default_factory=list)
-    #: (tid, rpos0, ref_base, observed_base, strand_reverse, pair_disagrees)
-    observations: list[tuple[int, int, str, str, bool, bool]] = field(default_factory=list)
+    #: batched overlap aggregates as Rust-core blobs:
+    #: (keys, disg, ref, altkeys, altbases, altstrands), or None
+    observations: tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None = None
 
 
 @dataclass(slots=True)
@@ -115,6 +115,20 @@ class _WorkerState:
         #: Reverse mapping for rescue's global search: reference FASTA names
         #: that the BAM header can express as output placements.
         self.tid_by_name: dict[str, int] = {name: tid for tid, name in enumerate(self.ref_names)}
+        #: Discovery memo: identical (placement, read sequence) reads repeat
+        #: massively on oligo panels; discovery is a pure function of these
+        #: inputs, so results are shared read-only. Bounded; cleared on cap.
+        self.discover_cache: dict[tuple, Any] = {}
+        #: Rescue scan memo: (block, reverse, span) -> (occurrences, truncated).
+        self.occ_cache: dict[tuple, tuple] = {}
+        #: Contig-key memo for rescue's global search.
+        self.contig_keys_cache: dict[str, int] | None = None
+        #: Whole-contig string cache for rescue scans, built lazily once per
+        #: worker when the reference fits the cache base budget; None means
+        #: not yet attempted, False means too large (fall back to refcache).
+        self.contig_seqs: dict[str, str] | None | bool = None
+        #: Lazily opened BAM handle for chunk-range streaming (parallel path).
+        self.bam: Any = None
 
     def contig(self, tid: int) -> str:
         try:
@@ -138,14 +152,95 @@ def _ensure_state() -> _WorkerState:
     return _STATE
 
 
-def _process_chunk_strings(chunk: list[list[str]]) -> list[TemplateResult]:
-    """Pool entry point: parse SAM lines and process each template."""
+_BLOB_DTYPES = (
+    np.uint64,
+    np.uint64,
+    np.uint8,
+    np.uint8,
+    np.uint64,
+    np.uint8,
+    np.uint8,
+    np.uint64,
+)
+
+
+def _chunk_observation_arrays(
+    obs: list[tuple[bytes, bytes, bytes, bytes, bytes, bytes]],
+) -> tuple[np.ndarray, ...]:
+    """Merge per-template overlap-aggregate blobs into chunk arrays (worker side).
+
+    The Rust core merges the blobs; numpy views them without copying.
+    """
+    blobs = _core.merge_aggregates(obs)
+    return tuple(np.frombuffer(b, dtype=dt) for b, dt in zip(blobs, _BLOB_DTYPES, strict=True))
+
+
+def _process_chunk_range(
+    bam_path: str, start_vo: int, end_vo: int
+) -> tuple[list[TemplateResult], tuple]:
+    """Pool entry point: stream one template-group-aligned BAM range.
+
+    Workers read the (name-sorted) BAM themselves at a virtual offset, so
+    records never cross the process boundary as SAM text.
+    """
     state = _ensure_state()
-    results: list[TemplateResult] = []
-    for lines in chunk:
-        records = [pysam.AlignedSegment.fromstring(line, state.header) for line in lines]
-        results.append(process_template(records, state))
-    return results
+    # One BAM handle per worker: opening parses the full header (tens of ms
+    # on large panels), which per-chunk opens would repeat hundreds of times.
+    if state.bam is None:
+        state.bam = pysam.AlignmentFile(bam_path, "rb")
+    bam = state.bam
+    if True:
+        bam.seek(start_vo)
+        results: list[TemplateResult] = []
+        obs: list[tuple[bytes, bytes, bytes, bytes, bytes, bytes]] = []
+        group: list[Any] = []
+        current_name: str | None = None
+        while bam.tell() < end_vo:
+            record = next(bam)
+            name = record.query_name
+            if name is None:
+                raise DataInvariantError("BAM record without QNAME")
+            if group and name != current_name:
+                result = process_template(group, state)
+                results.append(result)
+                if result.observations is not None:
+                    obs.append(result.observations)
+                group = []
+            group.append(record)
+            current_name = name
+        if group:
+            result = process_template(group, state)
+            results.append(result)
+            if result.observations is not None:
+                obs.append(result.observations)
+        return results, _chunk_observation_arrays(obs)
+
+
+def _iter_chunk_ranges(input_file: Any, chunk_size: int) -> Any:
+    """Yield (start, end) virtual-offset ranges covering template-aligned chunks.
+
+    ``end`` is the virtual offset just after the last record of the chunk's
+    final template group, which is exactly where the next chunk begins.
+    """
+    prev_vo = input_file.tell()
+    start_vo = prev_vo
+    last_name: str | None = None
+    groups = 0
+    for record in input_file.fetch(until_eof=True):
+        name = record.query_name
+        if name is None:
+            raise DataInvariantError("BAM record without QNAME")
+        if name != last_name:
+            if last_name is not None:
+                groups += 1
+                if groups >= chunk_size:
+                    yield start_vo, prev_vo
+                    start_vo = prev_vo
+                    groups = 0
+            last_name = name
+        prev_vo = input_file.tell()
+    if last_name is not None:
+        yield start_vo, prev_vo
 
 
 # ---------------------------------------------------------------------------
@@ -184,13 +279,13 @@ def process_template(records: list[Any], state: _WorkerState) -> TemplateResult:
     classification: str
     merge_reason: str | None = None
     merged_line: str | None = None
-    observations: list[tuple[int, int, str, str, bool, bool]] = []
+    obs_payload: tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None = None
 
     if r1 is not None and r2 is not None:
         m1 = not r1.flag & FLAG_UNMAPPED
         m2 = not r2.flag & FLAG_UNMAPPED
         if m1 and m2:
-            merged_line, classification, merge_reason, observations = _both_mapped(
+            merged_line, classification, merge_reason, obs_payload = _both_mapped(
                 r1, r2, others, state
             )
         elif m1:
@@ -232,12 +327,59 @@ def process_template(records: list[Any], state: _WorkerState) -> TemplateResult:
     else:
         for record in records:
             out_lines.append(("unmerged", record.to_string()))
-    return TemplateResult(classification, merge_reason, out_lines, observations)
+    return TemplateResult(classification, merge_reason, out_lines, obs_payload)
+
+
+def _build_core_structure(record: Any) -> Any:
+    """Build the Rust-core read structure for a mapped record."""
+    cigar = normalize_record_cigar(record.cigartuples)
+    seq = record.query_sequence
+    if seq is None:
+        raise DataInvariantError(f"record {record.query_name!r} has no SEQ")
+    quals = record.query_qualities
+    rg = record.get_tag("RG") if record.has_tag("RG") else None
+    return _core.build_structure(
+        record.reference_id,
+        record.reference_start,
+        bool(record.is_reverse),
+        record.mapping_quality,
+        record.query_name,
+        cigar,
+        seq,
+        list(quals) if quals is not None else None,
+        rg,
+    )
+
+
+def _core_merge(
+    s1: Any,
+    s2: Any,
+    cfg: PairLoomConfig,
+    merged_mapq: int | None,
+    rescue_bypass_mapq: bool,
+    has_non_primary: bool,
+) -> Any:
+    """Call the Rust-core merge with the configuration's gate parameters."""
+    return _core.merge_pair(
+        s1,
+        s2,
+        cfg.min_mapq,
+        cfg.min_overlap,
+        cfg.min_fragment_length,
+        cfg.max_fragment_length,
+        cfg.min_quality_difference,
+        cfg.max_consensus_quality,
+        cfg.conflict_policy,
+        cfg.library_orientation,
+        merged_mapq,
+        rescue_bypass_mapq,
+        has_non_primary,
+    )
 
 
 def _both_mapped(
     r1: Any, r2: Any, others: list[Any], state: _WorkerState
-) -> tuple[str | None, str, str | None, list[tuple[int, int, str, str, bool, bool]]]:
+) -> tuple[str | None, str, str | None, tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None]:
     """Jointly adjust a both-mapped pair; returns (merged SAM line, class, reason, obs)."""
     cfg = state.cfg
     tid1, tid2 = r1.reference_id, r2.reference_id
@@ -275,7 +417,7 @@ def _both_mapped(
     _set_proper_flag(r1, proper)
     _set_proper_flag(r2, proper)
 
-    observations: list[tuple[int, int, str, str, bool, bool]] = []
+    obs_payload = None
     if r1.reference_id != r2.reference_id:
         # Cross-contig pairs keep their adjusted records; no overlap analysis.
         if rescue_eligible(
@@ -285,37 +427,35 @@ def _both_mapped(
             cfg,
             shape_blocked=_rescue_shape_blocked(r1, r2, others),
         ):
-            return _attempt_rescue(r1, r2, cands1, cands2, others, observations, state)
-        return None, BOTH_ALIGNED, "different_contig", observations
+            return _attempt_rescue(r1, r2, cands1, cands2, others, obs_payload, state)
+        return None, BOTH_ALIGNED, "different_contig", obs_payload
 
-    struct1 = build_read_structure(r1)
-    struct2 = build_read_structure(r2)
+    s1 = _build_core_structure(r1)
+    s2 = _build_core_structure(r2)
     # The records now carry the conservative ADJUSTED MAPQs; the consensus
     # record takes its output MAPQ from those, never from the originals.
-    merged_mapq = min(struct1.mapq, struct2.mapq)
+    merged_mapq = min(s1.mapq, s2.mapq)
     # Eligibility filters (min_mapq) continue to apply to the ORIGINAL
     # aligner MAPQ (policy comment above).
-    struct1.mapq = orig_mapq1
-    struct2.mapq = orig_mapq2
+    s1.mapq = orig_mapq1
+    s2.mapq = orig_mapq2
     contig = state.contig(r1.reference_id)
     # Observations exist only where BOTH mates align a base (the aligned-
     # span intersection), so only that reference slice is fetched: distant
     # mates cost a read-sized fetch instead of the whole span between them.
-    ov_lo = max(struct1.start0, struct2.start0)
-    ov_hi = min(struct1.end0, struct2.end0)
-    observations: list[tuple[int, int, str, str, bool, bool]] = []
+    ov_lo = max(s1.start0, s2.start0)
+    ov_hi = min(s1.end0, s2.end0)
+    obs_payload = None
     if ov_lo < ov_hi:
         ref_seq = state.refcache.fetch(contig, ov_lo, ov_hi)
-        overlap = analyze_overlap(struct1, struct2, ref_seq, ov_lo, cfg)
-        observations = [
-            (o.tid, o.rpos0, o.ref_base, o.base, o.strand_reverse, o.pair_disagrees)
-            for o in overlap.observations
-        ]
+        blobs = _core.aggregate_overlap(
+            s1, s2, r1.reference_id, ref_seq, ov_lo, cfg.min_mapq, cfg.min_base_quality
+        )
+        if blobs[0]:
+            obs_payload = blobs
 
-    outcome = try_merge(
-        struct1, struct2, cfg, has_non_primary=bool(others), merged_mapq=merged_mapq
-    )
-    if isinstance(outcome, MergeFailure):
+    outcome = _core_merge(s1, s2, cfg, merged_mapq, False, bool(others))
+    if not outcome.ok:
         if rescue_eligible(
             outcome.reason,
             orig_mapq1,
@@ -323,10 +463,10 @@ def _both_mapped(
             cfg,
             shape_blocked=_rescue_shape_blocked(r1, r2, others),
         ):
-            return _attempt_rescue(r1, r2, cands1, cands2, others, observations, state)
-        return None, BOTH_ALIGNED, outcome.reason, observations
+            return _attempt_rescue(r1, r2, cands1, cands2, others, obs_payload, state)
+        return None, BOTH_ALIGNED, outcome.reason, obs_payload
     merged_record = _build_merged_record(r1.query_name, outcome, contig, state)
-    return merged_record.to_string(), MERGEABLE, None, observations
+    return merged_record.to_string(), MERGEABLE, None, obs_payload
 
 
 def _rescue_shape_blocked(r1: Any, r2: Any, others: list[Any]) -> bool:
@@ -358,9 +498,9 @@ def _attempt_rescue(
     cands1: Any,
     cands2: Any,
     others: list[Any],
-    observations: list[tuple[int, int, str, str, bool, bool]],
+    obs_payload: tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None,
     state: _WorkerState,
-) -> tuple[str | None, str, str | None, list[tuple[int, int, str, str, bool, bool]]]:
+) -> tuple[str | None, str, str | None, tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None]:
     """Attempt joint low-MAPQ rescue for an eligible template.
 
     Rescue relocates the mates to the unique compatible joint placement
@@ -371,7 +511,7 @@ def _attempt_rescue(
     """
     outcome = rescue_pair(r1, r2, cands1, cands2, state)
     if outcome.status != STATUS_RESCUED:
-        return None, BOTH_ALIGNED, outcome.status, observations
+        return None, BOTH_ALIGNED, outcome.status, obs_payload
     _relocate_record(r1, outcome.p1, state)
     _relocate_record(r2, outcome.p2, state)
     # A relocation may flip a mate's strand; the mate-reverse flags (0x20)
@@ -385,26 +525,22 @@ def _attempt_rescue(
     _sync_mate_fields(r1, r2)
     _set_proper_flag(r1, True)
     _set_proper_flag(r2, True)
-    struct1 = build_read_structure(r1)
-    struct2 = build_read_structure(r2)
+    s1 = _build_core_structure(r1)
+    s2 = _build_core_structure(r2)
     # Rescued pairs contribute no disagreement observations by policy: the
     # statistics keep testing the ORIGINAL aligner MAPQ, and an eligible
     # rescue always has a sub-threshold mate. Placements are not
     # re-observed at the rescued locus (documented in the README).
-    merged = try_merge(
-        struct1,
-        struct2,
-        state.cfg,
-        has_non_primary=bool(others),
-        merged_mapq=0,
-        rescue_bypass_mapq=True,
-    )
-    if isinstance(merged, MergeFailure):
-        return None, BOTH_ALIGNED, merged.reason, []
+    merged = _core_merge(s1, s2, state.cfg, 0, True, bool(others))
+    if not merged.ok:
+        return None, BOTH_ALIGNED, merged.reason, None
     merged_record = _build_merged_record(
         r1.query_name, merged, state.contig(r1.reference_id), state, rescued=True
     )
-    return merged_record.to_string(), MERGEABLE, None, []
+    return merged_record.to_string(), MERGEABLE, None, None
+
+
+_DISCOVER_CACHE_CAP = 262_144
 
 
 def _discover(record: Any, state: _WorkerState) -> Any:
@@ -412,24 +548,32 @@ def _discover(record: Any, state: _WorkerState) -> Any:
 
     BAM SEQ/CIGAR are stored in reference orientation for both strands, so
     base-level verification and exact-block sliding need no strand-specific
-    transform.
+    transform. Results are memoized per worker on
+    (tid, pos0, cigar, sequence): identical reads repeat massively on oligo
+    panels, and discovery is a pure function of these inputs.
     """
-    cfg = state.cfg
     cigar = normalize_record_cigar(record.cigartuples)
     seq = record.query_sequence
     if seq is None:
         raise DataInvariantError(f"record {record.query_name!r} has no SEQ")
-    contig = state.contig(record.reference_id)
-    return discover_candidates(
+    key = (record.reference_id, record.reference_start, cigar, seq.upper())
+    cached = state.discover_cache.get(key)
+    if cached is not None:
+        return cached
+    if len(state.discover_cache) >= _DISCOVER_CACHE_CAP:
+        state.discover_cache.clear()
+    result = discover_candidates(
         tid=record.reference_id,
         pos0=record.reference_start,
         cigar=cigar,
         query_seq=seq.upper(),
-        contig=contig,
+        contig=state.contig(record.reference_id),
         refcache=state.refcache,
-        cfg=cfg,
+        cfg=state.cfg,
         read_name=record.query_name,
     )
+    state.discover_cache[key] = result
+    return result
 
 
 def _apply_placement(
@@ -598,7 +742,7 @@ def _build_merged_record(
     record = pysam.AlignedSegment(state.header)
     record.query_name = qname
     record.flag = 0
-    record.reference_id = state.ref_names.index(contig)
+    record.reference_id = state.tid_by_name[contig]
     record.reference_start = merged.start0
     record.cigartuples = list(merged.cigar)
     record.query_sequence = merged.seq
@@ -616,13 +760,7 @@ def _build_merged_record(
         record.set_tag("RG", merged.read_group, value_type="Z")
     ref_end = merged.start0 + _merged_ref_len(merged.cigar)
     ref_seq = state.refcache.fetch(contig, merged.start0, ref_end)
-    md, nm = compute_md_nm(
-        merged.start0,
-        merged.cigar,
-        merged.seq,
-        ref_seq,
-        f"merged read {qname} at {contig}:{merged.start0 + 1}",
-    )
+    md, nm = _core.compute_md_nm(merged.start0, list(merged.cigar), merged.seq, ref_seq)
     record.set_tag("MD", md, value_type="Z")
     record.set_tag("NM", nm, value_type="i")
     return record
@@ -682,10 +820,12 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
             try:
                 header_dict = input_file.header.to_dict()
                 sort_order = detect_sort_order(input_file)
+                stream_path = str(cfg.input_path)
                 if sort_order != "queryname":
                     input_file.close()
                     sorted_input = name_sort_to_temp(str(cfg.input_path), tmpdir)
                     input_file = open_input_bam(sorted_input)
+                    stream_path = sorted_input
                 out_header_dict = _output_header(header_dict, cfg, sort_output=cfg.sort_output)
                 header_obj = pysam.AlignmentHeader.from_dict(out_header_dict)
                 ref_names = [sq["SN"] for sq in (header_dict.get("SQ") or [])]
@@ -708,7 +848,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                     if role in outputs:
                         writers[stream] = _BamWriter(outputs[role], header_obj)
 
-                aggregator = DisagreementAggregator(cfg)
+                aggregator = FastDisagreementAccumulator(cfg)
                 aggregator.set_spill_dir(tmpdir)
 
                 def handle(result: TemplateResult) -> None:
@@ -717,20 +857,26 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                         reasons[result.merge_reason] += 1
                     for stream, line in result.out_lines:
                         writers[stream].write(pysam.AlignedSegment.fromstring(line, header_obj))
-                    for obs in result.observations:
-                        aggregator.add_observation(*obs)
 
                 chunks = _iter_chunks(input_file, cfg.chunk_size)
                 if cfg.threads == 1:
                     state = _WorkerState(cfg, header_obj)
                     try:
                         for chunk in chunks:
+                            results = []
+                            obs = []
                             for records in chunk:
-                                handle(process_template(records, state))
+                                result = process_template(records, state)
+                                results.append(result)
+                                if result.observations is not None:
+                                    obs.append(result.observations)
+                            for result in results:
+                                handle(result)
+                            aggregator.add_chunk(*_chunk_observation_arrays(obs))
                     finally:
                         state.refcache.close()
                 else:
-                    _run_parallel(chunks, cfg, header_dict, handle)
+                    _run_parallel(input_file, stream_path, cfg, header_dict, handle, aggregator)
 
                 for writer in writers.values():
                     writer.close()
@@ -868,11 +1014,25 @@ def _iter_chunks(input_file: Any, chunk_size: int) -> Any:
         yield chunk
 
 
-def _run_parallel(chunks: Any, cfg: PairLoomConfig, header_dict: dict, handle: Any) -> None:
-    """Process chunks in a process pool with bounded, ordered submission."""
+def _run_parallel(
+    input_file: Any,
+    stream_path: str,
+    cfg: PairLoomConfig,
+    header_dict: dict,
+    handle: Any,
+    aggregator: Any,
+) -> None:
+    """Process chunks in a process pool with bounded, ordered submission.
+
+    Chunks are virtual-offset ranges; each worker streams its range from
+    ``stream_path`` itself, so records never serialize across the IPC
+    boundary. The pool forks when the platform allows it (warm imports;
+    no re-exec of the interpreter per worker).
+    """
     import multiprocessing
 
-    ctx = multiprocessing.get_context("spawn")
+    methods = multiprocessing.get_all_start_methods()
+    ctx = multiprocessing.get_context("fork" if "fork" in methods else "spawn")
     max_inflight = cfg.threads * 2
     with ProcessPoolExecutor(
         max_workers=cfg.threads,
@@ -882,33 +1042,33 @@ def _run_parallel(chunks: Any, cfg: PairLoomConfig, header_dict: dict, handle: A
     ) as pool:
         pending: deque = deque()
 
-        def submit_next(chunk: list[list[Any]]) -> None:
-            payload = [[record.to_string() for record in template] for template in chunk]
-            pending.append(pool.submit(_process_chunk_strings, payload))
+        def submit_next(start_vo: int, end_vo: int) -> None:
+            pending.append(pool.submit(_process_chunk_range, stream_path, start_vo, end_vo))
 
         try:
-            for chunk in chunks:
-                submit_next(chunk)
+            for start_vo, end_vo in _iter_chunk_ranges(input_file, cfg.chunk_size):
+                submit_next(start_vo, end_vo)
                 while len(pending) >= max_inflight:
-                    _drain_one(pending, handle)
+                    _drain_one(pending, handle, aggregator)
             while pending:
-                _drain_one(pending, handle)
+                _drain_one(pending, handle, aggregator)
         except BaseException:
             for future in pending:
                 future.cancel()
             raise
 
 
-def _drain_one(pending: deque, handle: Any) -> None:
+def _drain_one(pending: deque, handle: Any, aggregator: Any) -> None:
     future = pending.popleft()
     try:
-        results = future.result()
+        results, arrays = future.result()
     except PairLoomError:
         raise
     except Exception as exc:
         raise WorkerError(f"worker chunk failed: {exc}") from exc
     for result in results:
         handle(result)
+    aggregator.add_chunk(*arrays)
 
 
 def _warn_committed() -> None:

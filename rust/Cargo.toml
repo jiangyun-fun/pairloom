@@ -1,0 +1,19 @@
+[package]
+name = "pairloom-core"
+version = "0.1.0"
+edition = "2021"
+description = "Batched Rust core for PairLoom's per-base hot paths"
+
+[lib]
+name = "pairloom_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+[profile.dev]
+opt-level = 3
+debug = false
+
+[profile.release]
+opt-level = 3

@@ -145,10 +145,10 @@ def rescue_pair(r1: Any, r2: Any, cands1: Any, cands2: Any, state: Any) -> Rescu
     # exact across ALL reference contigs — off-header occurrences count
     # toward ambiguity and the cap, they just never host a placement.
     keys = _contig_keys(state)
-    occ1, truncated = _global_occurrences(blocks[0], strands[0], spans[0], state, keys)
+    occ1, truncated = _memoized_global_occurrences(blocks[0], strands[0], spans[0], state, keys)
     if truncated:
         return RescueOutcome(STATUS_TRUNCATED)
-    occ2, truncated = _global_occurrences(blocks[1], strands[1], spans[1], state, keys)
+    occ2, truncated = _memoized_global_occurrences(blocks[1], strands[1], spans[1], state, keys)
     if truncated:
         return RescueOutcome(STATUS_TRUNCATED)
 
@@ -172,6 +172,9 @@ def _contig_keys(state: Any) -> dict[str, int]:
     gets a unique negative key in reference order (BAM tids are never
     negative, so the spaces cannot collide).
     """
+    cached = getattr(state, "contig_keys_cache", None)
+    if cached is not None:
+        return cached
     keys: dict[str, int] = {}
     foreign = 0
     for name in state.refcache.contig_names:
@@ -181,7 +184,35 @@ def _contig_keys(state: Any) -> dict[str, int]:
         else:
             foreign += 1
             keys[name] = -foreign
+    state.contig_keys_cache = keys
     return keys
+
+
+_OCC_CACHE_CAP = 131_072
+
+
+def _memoized_global_occurrences(
+    block: str,
+    record_reverse: bool,
+    span: int,
+    state: Any,
+    keys: dict[str, int],
+) -> tuple[list[RescuePlacement], bool]:
+    """Memoized :func:`_global_occurrences` on the worker state.
+
+    Rescue-eligible mates repeat massively on oligo panels (the same
+    ambiguous oligo rescues thousands of pairs); the scan is a pure
+    function of (block, strand labelling, span), so results are shared.
+    """
+    key = (block, record_reverse, span)
+    cached = state.occ_cache.get(key)
+    if cached is not None:
+        return cached
+    if len(state.occ_cache) >= _OCC_CACHE_CAP:
+        state.occ_cache.clear()
+    result = _global_occurrences(block, record_reverse, span, state, keys)
+    state.occ_cache[key] = result
+    return result
 
 
 def _global_occurrences(
@@ -211,19 +242,50 @@ def _global_occurrences(
     cap = state.cfg.max_candidates_per_read
     raw = revcomp(block, "rescue block") if record_reverse else block
     probes = ((raw, False), (revcomp(raw, "rescue block"), True))
+    seqs = _contig_seq_cache(state)
     occurrences: list[RescuePlacement] = []
     for name in state.refcache.contig_names:
         key = keys[name]
         contig_len = state.refcache.length(name)
         for probe, is_reverse in probes:
-            for pos in _scan_contig(state.refcache, name, contig_len, probe):
+            for pos in _scan_contig(state.refcache, name, contig_len, probe, seqs):
                 occurrences.append(RescuePlacement(key, pos, is_reverse, span))
                 if len(occurrences) > cap:
                     return occurrences, True
     return occurrences, False
 
 
-def _scan_contig(refcache: Any, name: str, contig_len: int, probe: str) -> Iterator[int]:
+def _contig_seq_cache(state: Any) -> dict[str, str] | None:
+    """Whole-contig strings for scans, built once per worker when affordable.
+
+    Only when the full reference fits ``--reference-cache-bases`` (the same
+    budget the LRU contig cache uses) are contigs fetched whole and kept;
+    genome-scale references return None and scans stream through the
+    ReferenceCache chunked fetches as before.
+    """
+    if state.contig_seqs is not None and state.contig_seqs is not False:
+        return state.contig_seqs  # type: ignore[return-value]
+    if state.contig_seqs is False:
+        return None
+    total = sum(state.refcache.length(name) for name in state.refcache.contig_names)
+    if total > state.cfg.reference_cache_bases:
+        state.contig_seqs = False
+        return None
+    seqs = {
+        name: state.refcache.fetch(name, 0, state.refcache.length(name))
+        for name in state.refcache.contig_names
+    }
+    state.contig_seqs = seqs
+    return seqs
+
+
+def _scan_contig(
+    refcache: Any,
+    name: str,
+    contig_len: int,
+    probe: str,
+    seqs: dict[str, str] | None = None,
+) -> Iterator[int]:
     """Yield ascending start positions of ``probe`` in one contig.
 
     A generator, so a capped consumer can stop without materializing the
@@ -234,6 +296,13 @@ def _scan_contig(refcache: Any, name: str, contig_len: int, probe: str) -> Itera
     """
     span = len(probe)
     if span > contig_len:
+        return
+    if seqs is not None:
+        seq = seqs[name]
+        idx = seq.find(probe)
+        while idx != -1:
+            yield idx
+            idx = seq.find(probe, idx + 1)
         return
     if contig_len <= _SCAN_CHUNK:
         seq = refcache.fetch(name, 0, contig_len)

@@ -1,0 +1,10 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "pairloom-core"
+version = "0.1.0"
+
+[tool.maturin]
+module-name = "pairloom_core"

@@ -34,3 +34,4 @@ htmlcov/
 benchmarks/results/data/
 benchmarks/results/t*/
 benchmarks/results/profile/
+rust/target/
