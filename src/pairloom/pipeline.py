@@ -13,6 +13,7 @@ aggregations, so results do not depend on scheduling or thread count.
 from __future__ import annotations
 
 import contextlib
+import gc
 import os
 import subprocess
 import sys
@@ -245,6 +246,11 @@ def _process_chunk_range(
         for writer in writers.values():
             with contextlib.suppress(OSError, ValueError):
                 writer.close()
+        # pysam writer objects participate in reference cycles; without an
+        # explicit collection each chunk's writers (and their internal
+        # header copies) linger in the worker for the whole run.
+        writers.clear()
+        gc.collect()
 
 
 def _iter_chunk_ranges(input_file: Any, chunk_size: int) -> Any:
@@ -827,6 +833,47 @@ def _merged_ref_len(cigar: tuple[tuple[int, int], ...]) -> int:
 # ---------------------------------------------------------------------------
 
 
+_CAT_FANIN = 64
+
+
+def _concat_bams(dest: Path, files: list[str], tmp_dir: str) -> None:
+    """Concatenate BAM chunks into ``dest`` with bounded fan-in.
+
+    ``samtools cat`` keeps every input open simultaneously and parses each
+    input's header, so a single call over hundreds of chunk files would
+    scale memory with the chunk count (megabytes per contig-heavy header).
+    Cascading 64-way batches keeps the open set bounded; intermediate
+    batches are consumed as they are produced.
+    """
+    current = list(files)
+    generation = 0
+    try:
+        while len(current) > _CAT_FANIN:
+            reduced: list[str] = []
+            for start in range(0, len(current), _CAT_FANIN):
+                group = current[start : start + _CAT_FANIN]
+                if len(group) == 1:
+                    reduced.append(group[0])
+                    continue
+                merged = os.path.join(
+                    tmp_dir, f"cat_{dest.stem}_{generation}_{start:06d}.bam"
+                )
+                pysam.samtools.cat("-o", merged, *group)
+                for path in group:
+                    os.unlink(path)
+                reduced.append(merged)
+            current = reduced
+            generation += 1
+        pysam.samtools.cat("-o", str(dest), *current)
+    except (OSError, ValueError) as exc:
+        raise OutputError(f"output concatenation failed for {dest}: {exc}") from exc
+    finally:
+        for path in current:
+            with contextlib.suppress(OSError):
+                if path != str(dest):
+                    os.unlink(path)
+
+
 class _BamWriter:
     """BAM writer to a temp file on the destination filesystem."""
 
@@ -965,12 +1012,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                         files = chunk_files.get(stream) or []
                         if not files:
                             continue
-                        try:
-                            pysam.samtools.cat("-o", str(writer.tmp_path), *files)
-                        except (OSError, ValueError) as exc:
-                            raise OutputError(
-                                f"output concatenation failed for {stream}: {exc}"
-                            ) from exc
+                        _concat_bams(writer.tmp_path, files, tmpdir)
 
                 disag_tmp = Path(str(cfg.disagreement_parquet) + f".pairloom-tmp-{os.getpid()}")
                 stats_tmp = Path(str(cfg.read_stats_parquet) + f".pairloom-tmp-{os.getpid()}")
