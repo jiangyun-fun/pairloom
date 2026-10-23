@@ -1,5 +1,5 @@
 ---
-title: "PairLoom ≤200 s full-sample merge at 4 workers — optimization plan"
+title: "PairLoom ≤200 s full-sample merge at 4 workers — optimization plan (as executed)"
 author: "Yun Jiang"
 date: today
 ---
@@ -71,10 +71,38 @@ pilot (99,401 templates) — a ~9.7x speedup is required.
 - Editable install shadows: baseline snapshot must be imported via
   PYTHONPATH precedence, verified before benchmarking.
 
-# Verification
+# Verification (as executed)
 
-1. Pilot: time (GNU time, no profiler) after each change; equivalence gate
-   green after each kept change.
-2. Suite: `pixi run test` 182 passed, lint/format clean.
-3. Full dataset: ≤200 s at 4 threads with rescue on; equivalence gate green
-   against baseline full outputs; report timing table.
+1. Pilot timed after every stage (GNU time, no profiler): 33.8 s baseline →
+   10.4 (rescue caches) → 9.2 (virtual-offset IPC) → 7.9 (persistent worker
+   handles) → 5.7 s (chunk default 8192); equivalence gate green at every
+   step.
+2. Suite: 233 passed, 9 skipped (182 existing + 51 new Rust-vs-Python
+   parity tests); ruff lint and format clean.
+3. Full dataset, 4 threads, rescue on: 173.6 s quiet machine / 227–229 s
+   under concurrent third-party load (12-core shared box); both runs
+   record-identical to the pre-optimization baseline outputs (merged BAM
+   5,975,808 records, unmerged 281,369, disagreement table 46,812 rows,
+   read-stats, done line).
+
+# Deviations from the plan (as executed)
+
+1. pysam 0.24.1 has no binary record transport, so SAM strings were
+   replaced by a different mechanism: workers stream their chunk of the
+   BAM directly at virtual offsets and never receive records over IPC at
+   all; only results (counts, aggregate blobs, output SAM lines) return.
+2. The first Python-only aggregation attempt regressed (51.7 s pilot) by
+   moving per-base dict churn around instead of removing it; this
+   triggered the planned Rust-core decision point, and the core now owns
+   structure building, merging, aggregation, and MD/NM.
+3. The uv/pip editable route for the Rust crate was unreliable (cached
+   wheels reinstalled stale .so files); the durable install is
+   `pixi run core` (rust/install_core.py builds with cargo and copies the
+   extension in).
+4. chunk_size default changed 256 → 8192 after full-dataset measurement
+   (275 s at 256/2048-class overhead vs 173.6 s at 8192); outputs are
+   chunk-size invariant (gate green at 256, 2048, and 8192).
+5. The target was met on a quiet machine (173.6 s); under concurrent
+   heavy third-party load the same binary measures ~228 s. The remaining
+   known lever (worker-side output writing, removing the last main-side
+   record serialization) is queued as the top Next item.

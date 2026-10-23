@@ -892,3 +892,31 @@ Files (analysis repo): Created `results/timing_decomposition/profile_single_thre
 Files (pairloom repo): Updated `docs/misc/requirements_audit.qmd` (this entry), `docs/misc/next_and_recommendation.qmd` (profiling item upgraded to M with cProfile evidence).
 
 Git: docs commits in both repos, not pushed.
+
+## Optimize PairLoom to ≤200 s on the full sample at four workers
+
+```
+level: high
+date: 2026-10-23
+```
+
+### description
+
+Process the full GO00009 S19 dataset (6.08M templates) in ≤200 s wall at 4 workers with rescue enabled, preserving all outputs and biological decisions exactly; reduce observation transport, repeated reference searches, and SAM serialization first; benchmark each change without profiling instrumentation; implement a batched Rust core if Python remains the bottleneck; verify equivalent records, qualities, tags, classifications, and counts; iterate on the pilot, then measure the full dataset before claiming success.
+
+### result
+
+1. Implemented: batched Rust core (structure build, try_merge, aggregation, MD/NM) plus worker-side blob aggregation with numpy reduction; memoized rescue scans, discovery, contig keys; virtual-offset chunk streaming with fork workers; chunk default 256 to 8192.
+2. Verified: equivalence gate PASS on the pilot at every stage and on the full dataset — merged BAM 5,975,808 records, unmerged 281,369, disagreement table 46,812 rows, read-stats, done line all identical to baseline.
+3. Measured: full run 1,938 s to 173.6 s quiet machine (11.2x) / 227–229 s under concurrent load; suite 233 passed (51 new parity tests); lint/format clean.
+4. Documented: `pixi run core` build task (AGENTS/README); load sensitivity and the queued worker-side-writing lever recorded.
+
+### change
+
+Files (pairloom repo):
+- Created: `rust/` (crate + installer), `benchmarks/equivalence_check.py`, `tests/test_core_equivalence.py`, plan/report pairs `docs/plans/20261023-103040_*` and `20261023-123015_*`
+- Updated: `src/pairloom/{pipeline,parquetout,overlap,rescue,config}.py`, `README.md`, `AGENTS.md`, `pixi.toml`, `pixi.lock`, `.gitignore`, `docs/misc/next_and_recommendation.qmd`, this entry
+
+Packages: numpy now a declared dependency; Environments: `pairloom_core` extension built into the pairloom pixi default env via `pixi run core`.
+
+Git: 0829a86 (plan), f941ff7 (perf), plus this docs commit on main; not pushed.

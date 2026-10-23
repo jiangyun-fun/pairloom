@@ -1,0 +1,700 @@
+---
+title: "Sub-200s full-sample merge optimization — report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+### Full-dataset merge at four workers runs in 173.6 s with identical outputs
+
+```
+level: high
+```
+
+#### reason
+
+High: measured end to end on the full dataset with the equivalence gate green at both pilot and full scale, and the suite (233 tests) passes.
+
+#### description
+
+```
+type: [table, text]
+```
+
+1. Batched Rust core (`rust/pairloom_core`, pyo3): bit-exact ports of
+   read-structure building, `try_merge`, overlap-observation aggregation,
+   and MD/NM computation. Python references remain the semantic authority.
+2. Observation transport reduced to blobs: workers aggregate per template
+   in Rust, merge per chunk in Rust, and the main process reduces numpy
+   arrays — the 15.2M per-base Python objects per 100k pairs are gone.
+3. Repeated reference searches memoized: whole-contig rescue scan cache,
+   occurrence memoization, contig-key memo, discovery memoization, O(1)
+   contig-to-tid lookup.
+4. SAM serialization off the IPC boundary: workers stream their chunk at a
+   BAM virtual offset (no record text crosses processes), fork pool,
+   persistent worker handles.
+5. `--chunk-size` default 256 → 8192 after full-scale measurement.
+
+| Stage | Wall |
+| --- | ---: |
+| Baseline full run (pre-optimization) | 1,938 s |
+| Python-only aggregation attempt (rejected) | (pilot regressed to 51.7 s) |
+| Rust core + caches + voffset IPC (pilot) | 5.7 s (baseline 33.8 s) |
+| Full dataset, quiet machine | **173.6 s** |
+| Full dataset, concurrent third-party load | 227–229 s |
+
+#### before
+
+The full dataset took 1,938 s (32 min 18 s) at four workers; the pilot
+alone took 33.8 s, dominated by per-base Python object work, unmemoized
+rescue scans fetching all 21,839 contigs per attempt, and SAM text
+round-trips across the process boundary.
+
+#### after
+
+The same command, rescue enabled, completes in 173.6 s on a quiet machine
+(11.2x) with every output record-identical: merged BAM 5,975,808 records,
+unmerged 281,369, disagreement table 46,812 rows, read-stats, and a
+byte-identical done line. Under concurrent heavy load on the shared
+12-core machine the same binary measures ~228 s; the remaining lever
+(worker-side output writing) is queued.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `benchmarks/equivalence_check.py` PASS on pilot and full against
+  pre-optimization outputs (`/tmp/bench_opt/base`, analysis-repo
+  `data/full`).
+- Timing: `FINAL-FULL wall=173.56s` (chunk 8192), `FINAL-FULL-2
+  wall=228.74s` under load; suite `233 passed, 9 skipped`.
+
+:::
+
+## fix
+
+None
+
+## limitation
+
+### Target holds on a quiet machine; shared-load runs measure ~228 s
+
+```
+level: high
+```
+
+#### reason
+
+High: two consecutive full runs under concurrent third-party load
+reproduced 227 s and 228.7 s; the 173.6 s run was taken when the box was
+quiet.
+
+#### description
+
+```
+type: [statistic]
+```
+
+The 12-core machine is shared. A 333%-CPU node process from another
+session overlapped the later runs. The known remaining lever is moving
+output writing into workers (removes the last main-side record
+serialization, ~50 s under load).
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`FINAL-FULL wall=226.97s`, `FINAL-FULL-2 wall=228.74s`, load average
+~5/12 during both; `uptime` and `ps aux` captured in the session log.
+
+:::
+
+## caveat
+
+### The Rust core must be built into the environment before use
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the pipeline imports `pairloom_core` unconditionally; a fresh
+clone needs one extra build step.
+
+#### description
+
+```
+type: [text]
+```
+
+`pixi run core` builds the extension with cargo and installs it
+(`rust/install_core.py`). The import fails loudly when the build is
+missing. Fresh-environment setup is now `pixi install && pixi run core`.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+AGENTS.md task table; verified by the failed-import test run before the
+task existed.
+
+:::
+
+## assumption
+
+None
+
+## conclusion
+
+### Every output is unchanged; only the time moved
+
+```
+level: high
+```
+
+#### reason
+
+High: record-level equality on the full dataset across merged BAM,
+unmerged BAM, both parquet tables, and the done line, plus the 51
+Rust-vs-Python parity tests holding structures, every merge outcome and
+failure reason, MD/NM, and aggregation counts identical.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Full-scale equivalence: PASS against pre-optimization outputs.
+2. Thread-count and chunk-size invariance held throughout (gate green at
+   256, 2048, 8192).
+3. Biological decisions untouched: same rescues, same reasons, same
+   consensus sequences, qualities, tags, and statistical counts.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_core_equivalence.py` (51 passed); full-scale checker output
+in the session log.
+
+:::
+
+## recommendation
+
+### M: Choose the arm by required semantics — sequence recovery vs placement honesty
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward from the benchmark report; still the governing
+choice, now with PairLoom 11x faster on this class of data.
+
+#### description
+
+```
+type: [text]
+```
+
+State which semantics an analysis needs before choosing fastp or
+PairLoom.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Treat merge-reason summaries as pipeline telemetry
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Surface PairLoom's merge-reason counts in QC reports.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Measure joint-rescue cost on low-MAPQ-heavy cohorts before scaling
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward; rescue scans are now memoized but still linear
+per distinct ambiguous block on first sight.
+
+#### description
+
+```
+type: [text]
+```
+
+Sample-measure rescue cost on large references; `--no-rescue` opts out.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward advisory guard.
+
+#### description
+
+```
+type: [text]
+```
+
+Measure target-reference repeat content first.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### H: Move output writing into workers; concat per-chunk BAMs at publish
+
+```
+level: high
+```
+
+#### reason
+
+High: the one remaining measured lever (~50 s under load) that makes the
+sub-200 s target robust on a loaded shared machine.
+
+#### description
+
+```
+type: [text]
+```
+
+Workers write their own chunk BAMs (shared header, `samtools cat`-style
+concat in order at publish); main stops parsing output records entirely.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Pilot split: workers 4.6 s, main 3.6 s, of which record parse and write
+dominates the main side.
+
+:::
+
+### M: Extend candidate discovery to slide gapped alignments
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward; indel-bearing refusals recur in the GO00009
+reasons.
+
+#### description
+
+```
+type: [text]
+```
+
+Bounded local realignment beyond exact ungapped blocks.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Batch the rescue reference search with a multi-pattern index
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward; memoization helps pools but not first-sight
+genome scans.
+
+#### description
+
+```
+type: [text]
+```
+
+Aho-Corasick-style batching per work chunk.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Add optional --merge-stats-parquet output
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Overlap-length distributions and merge-rejection reason counts.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Build a calibrated joint-MAPQ model for rescued pairs
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Derive joint confidence instead of a constant.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward; now also needs the rust build step.
+
+#### description
+
+```
+type: [text]
+```
+
+Pixi-based test matrix, ruff, benchmark smoke, `pixi run core`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Promote the synthetic known-fragment benchmark into the repo suite
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Move the generator and evaluator under `benchmarks/`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### The Python-only aggregation attempt regressed before the Rust core ran
+
+```
+level: high
+```
+
+#### reason
+
+High: measured directly, and it triggered the user's planned decision
+point exactly as designed.
+
+#### description
+
+```
+type: [statistic]
+```
+
+Pre-aggregating observations in Python dicts cost more than the per-call
+path it replaced (pilot 51.7 s vs 33.8 s baseline): per-position dict
+churn simply moved from workers to transport. The Rust core then removed
+the per-position Python entirely.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+Timings in the session log: 33.8 → 51.7 (rejected) → 33.4 (core, before
+caches) → 10.4 (caches) → 5.7 s (defaults).
+
+:::
+
+## process
+
+### Benchmarked every change without profiling instrumentation, per instruction
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. Every keep/drop decision used GNU time on real runs; cProfile was used
+   only to locate candidates, never to report.
+2. The equivalence gate ran after every kept change, catching two real
+   bugs (a lost observations payload on the merge-success path; a uint64
+   overflow in alt-row keys).
+3. The rejected Python aggregation was measured, found slower, and
+   superseded rather than kept.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Gate outputs interleaved with every timing in the session log.
+
+:::
+
+### Two silent-failure packaging traps cost roughly an hour
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. uv/pip reinstalled a stale cached wheel of the Rust crate twice,
+   shadowing fresh builds (wrong PyInit symbol).
+2. An implicit pixi env sync later removed the manually installed
+   extension mid-session, breaking the suite import.
+3. The better action, now in place: a dedicated `pixi run core` task that
+   builds with cargo and copies the extension, outside the package
+   manager's cache.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`readelf` symbol checks and the failed import run in the session log;
+`rust/install_core.py` + pixi task now documented in AGENTS.md.
+
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: high
+```
+
+#### reason
+
+High: mutation facts.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Repo | Verb | Paths |
+| --- | --- | --- |
+| pairloom | Created | `rust/` (Cargo.toml, pyproject.toml, src/lib.rs, install_core.py), `benchmarks/equivalence_check.py`, `tests/test_core_equivalence.py`, this report |
+| pairloom | Updated | `src/pairloom/{pipeline,parquetout,overlap,rescue,config}.py`, `README.md`, `AGENTS.md`, `pixi.toml`, `pixi.lock`, `.gitignore`, plan (as executed) |
+| analysis | Updated | (from earlier turns this session; none this stage) |
+
+Environments: pairloom pixi default — `pairloom_core` extension installed
+via `pixi run core`; numpy now a declared dependency.
+Git: `0829a86` (plan), `f941ff7` (perf), this report's docs commit; not
+pushed.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline` — 4 commits today in the pairloom repo.
+
+:::
+
+## other
+
+None

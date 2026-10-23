@@ -5,12 +5,12 @@ author: "Yun Jiang"
 
 ## next
 
-1. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
-2. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk) so genome-scale runs avoid the per-template linear scan.
-3. M: add a `--merge-stats-parquet` optional output with overlap-length distributions and merge-rejection reason counts.
-4. M: optimize the per-base hot paths — overlap analysis, observation-row construction, SAM-string round-trips — identified by cProfile as the ~19 s/100k base cost.
+1. H: move output writing into workers and concat per-chunk BAMs at publish, closing the load-sensitivity gap (~50 s under load).
+2. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
+3. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk) so genome-scale runs avoid the per-template linear scan.
+4. M: add a `--merge-stats-parquet` optional output with overlap-length distributions and merge-rejection reason counts.
 5. L: build a calibrated joint-MAPQ model for rescued pairs to replace the flat output MAPQ 0.
-6. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke) with Dependabot.
+6. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke, `pixi run core` build) with Dependabot.
 7. L: promote the synthetic known-fragment benchmark into the repo suite under `benchmarks/`.
 
 ## recommendation
