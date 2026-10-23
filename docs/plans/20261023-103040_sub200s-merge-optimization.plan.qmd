@@ -1,0 +1,80 @@
+---
+title: "PairLoom ≤200 s full-sample merge at 4 workers — optimization plan"
+author: "Yun Jiang"
+date: today
+---
+
+# Objective
+
+Process the GO00009 S19 full dataset (6.08M prep-surviving templates) in
+≤200 s wall on this machine with `--threads 4`, rescue enabled, with
+outputs and biological decisions preserved exactly: identical merged and
+unmerged BAM records (SEQ/QUAL/CIGAR/MAPQ/tags), identical disagreement
+parquet content, identical read-stats classifications, and a byte-identical
+done line (statistical counts). Current baseline: 1,938 s full / 31.3 s
+pilot (99,401 templates) — a ~9.7x speedup is required.
+
+# Ordered approach (per the user's instruction)
+
+1. Reduce per-base observation transport: workers currently ship 15.2M
+   `OverlapObservation` objects per 100k pairs across the process boundary
+   and the main process re-aggregates one call per base. Pre-aggregate per
+   chunk in the worker and bulk-merge compact entries in the main process.
+2. Reduce repeated reference searches: memoize rescue whole-reference
+   uniqueness scans by searched block; keep a per-worker concatenated
+   reference blob for scans; audit the ReferenceCache (4-contig LRU against
+   a 21,839-contig panel) for thrash on the rescue path.
+3. Reduce SAM serialization: replace the SAM-string round-trips on the
+   parallel path (`to_string` -> pickle -> `fromstring` -> process ->
+   `to_string` -> `fromstring`) with pysam binary record transport
+   (`to_binary`/`from_binary`), keeping the single-process path direct.
+4. Benchmark each change on the pilot (defaults, `--threads 4`, GNU time,
+   no profiler) and keep only wins; require the equivalence gate after
+   every kept change.
+5. If Python execution remains the bottleneck (expected: `try_merge`'s
+   per-position consensus loop and `build_read_structure`'s per-base dict
+   construction are ~50% of profiled time), implement a batched Rust core
+   (pyo3, built into the pixi env) covering structure building, the merge
+   loop, and overlap-observation aggregation — not a package rewrite. Port
+   semantics exactly; the Python pipeline keeps orchestration, rescue
+   placement policy, record construction, and output ordering.
+
+# Equivalence gate (after every stage)
+
+1. Snapshot the current implementation as the baseline (PYTHONPATH override
+   copy); run baseline and optimized on `data/pilot/B.aln.bam` (defaults,
+   4 threads).
+2. Compare: per-record SAM-string equality on merged and unmerged BAMs in
+   stream order; parquet frame equality (disagreement + read-stats); done
+   line byte equality; full test suite green (182).
+3. Only after the pilot gate passes: one full-dataset run, timed, with the
+   same equivalence comparisons against the baseline full outputs.
+
+# Files
+
+- `src/pairloom/{pipeline,merge,overlap,alignment,parquetout,rescue,reference}.py`
+- new `rust/` crate + pixi build wiring, if Phase 5 is reached
+- `benchmarks/equivalence_check.py` (baseline-vs-candidate comparison)
+- README performance section update on success
+
+# Risks
+
+- pysam binary transport API availability in 0.24.1 — verify before
+  relying on it; fall back to passing objects via fork-inherited state or
+  keeping strings only where cheap.
+- Byte-identical outputs across process counts depend on unchanged template
+  order and record content; the parallel drain order must stay strict.
+- Parquet determinism: same pyarrow version, same batch settings, else
+  compare frames not bytes.
+- Rust build must live inside the pixi env reproducibly (rust + maturin
+  deps); the gate is the suite + equivalence, not the profiler.
+- Editable install shadows: baseline snapshot must be imported via
+  PYTHONPATH precedence, verified before benchmarking.
+
+# Verification
+
+1. Pilot: time (GNU time, no profiler) after each change; equivalence gate
+   green after each kept change.
+2. Suite: `pixi run test` 182 passed, lint/format clean.
+3. Full dataset: ≤200 s at 4 threads with rescue on; equivalence gate green
+   against baseline full outputs; report timing table.
