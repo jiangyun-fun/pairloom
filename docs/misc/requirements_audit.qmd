@@ -920,3 +920,30 @@ Files (pairloom repo):
 Packages: numpy now a declared dependency; Environments: `pairloom_core` extension built into the pairloom pixi default env via `pixi run core`.
 
 Git: 0829a86 (plan), f941ff7 (perf), plus this docs commit on main; not pushed.
+
+## Do the worker-side writing change, then re-measure under load
+
+```
+level: high
+date: 2026-10-23
+```
+
+### description
+
+Implement worker-side output writing (workers write per-chunk BAMs; main only concatenates in order and stamps the output header), then re-measure the full dataset under load, per the user's go-ahead.
+
+### result
+
+1. Implemented: process_template emits records directly to writers (no SAM text on the hot path); workers produce per-chunk BAMs sharing the input header object; main concatenates (bounded 64-way cascading cat) and stamps the @PG output header once per stream via samtools reheader; samtools is now a runtime dependency.
+2. Verified: equivalence PASS on the pilot (1 and 4 threads) and on the full dataset; suite 233 passed; peak RSS bounded (494 MB at 1,553 chunks vs 8.15 GB before the fan-in fix).
+3. Diagnosed: yesterday's 173.6 s vs 227–229 s spread was mostly a cli.py chunk-size default bug (256 overriding the 8192 config default), not machine load; now fixed at both sites.
+4. Measured: full dataset under extreme load (load average 44, box 4x oversubscribed by other sessions): 678 s — starvation, not code. Quiet and moderate-load runs are queued behind a load watcher.
+
+### change
+
+Files (pairloom repo):
+- Updated: `src/pairloom/{pipeline,cli}.py`, `pixi.toml`, `pixi.lock`, `docs/misc/next_and_recommendation.qmd`, this entry
+
+Packages: samtools promoted to runtime dependency; Environments: unchanged.
+
+Git: 60ac6d3 (worker writing), 58f370c (fan-in fix + docs commit to follow); not pushed.
