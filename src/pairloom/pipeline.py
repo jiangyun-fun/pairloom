@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import subprocess
 import sys
 import tempfile
 from collections import Counter, deque
@@ -101,20 +102,21 @@ class RunSummary:
 class _WorkerState:
     """Per-process configuration, header, and reference cache."""
 
-    def __init__(self, cfg: PairLoomConfig, header: Any) -> None:
+    def __init__(self, cfg: PairLoomConfig, header: Any | None) -> None:
         from pairloom.reference import ReferenceCache
 
         self.cfg = cfg
         self.header = header
+        ref_names = [sq["SN"] for sq in (header.to_dict().get("SQ") or [])] if header else []
         self.refcache = ReferenceCache(
             cfg.reference_path,
             max_contigs=cfg.reference_cache_contigs,
             max_bases=cfg.reference_cache_bases,
         )
-        self.ref_names: list[str] = [sq["SN"] for sq in (header.to_dict().get("SQ") or [])]
+        self.ref_names: list[str] = ref_names
         #: Reverse mapping for rescue's global search: reference FASTA names
         #: that the BAM header can express as output placements.
-        self.tid_by_name: dict[str, int] = {name: tid for tid, name in enumerate(self.ref_names)}
+        self.tid_by_name: dict[str, int] = {name: tid for tid, name in enumerate(ref_names)}
         #: Discovery memo: identical (placement, read sequence) reads repeat
         #: massively on oligo panels; discovery is a pure function of these
         #: inputs, so results are shared read-only. Bounded; cleared on cap.
@@ -136,14 +138,24 @@ class _WorkerState:
         except IndexError:
             raise DataInvariantError(f"reference id {tid} missing from BAM header") from None
 
+    def bind_header(self, header: Any) -> None:
+        """Adopt the streamed BAM's header object (workers, lazily).
+
+        Sharing the file's exact header object makes record construction and
+        writer emission take pysam's fast same-header path; the output @PG
+        header is stamped once at publish time by ``samtools reheader``.
+        """
+        self.header = header
+        self.ref_names = [sq["SN"] for sq in (header.to_dict().get("SQ") or [])]
+        self.tid_by_name = {name: tid for tid, name in enumerate(self.ref_names)}
+
 
 _STATE: _WorkerState | None = None
 
 
-def _worker_init(cfg: PairLoomConfig, header_dict: dict) -> None:
+def _worker_init(cfg: PairLoomConfig) -> None:
     global _STATE
-    header = pysam.AlignmentHeader.from_dict(header_dict)
-    _STATE = _WorkerState(cfg, header)
+    _STATE = _WorkerState(cfg, None)
 
 
 def _ensure_state() -> _WorkerState:
@@ -176,22 +188,37 @@ def _chunk_observation_arrays(
 
 
 def _process_chunk_range(
-    bam_path: str, start_vo: int, end_vo: int
-) -> tuple[list[TemplateResult], tuple]:
+    bam_path: str,
+    start_vo: int,
+    end_vo: int,
+    chunk_index: int,
+    tmp_dir: str,
+    streams: tuple[str, ...],
+) -> tuple[list[tuple[str, str | None]], dict[str, str], tuple]:
     """Pool entry point: stream one template-group-aligned BAM range.
 
-    Workers read the (name-sorted) BAM themselves at a virtual offset, so
-    records never cross the process boundary as SAM text.
+    Workers read the (name-sorted) BAM themselves at a virtual offset and
+    write their output records into per-chunk BAM files, so records never
+    cross the process boundary in either direction. Returns per-template
+    metadata (classification, merge reason), the chunk's output file paths,
+    and the chunk's aggregated observation arrays.
     """
     state = _ensure_state()
     # One BAM handle per worker: opening parses the full header (tens of ms
     # on large panels), which per-chunk opens would repeat hundreds of times.
     if state.bam is None:
         state.bam = pysam.AlignmentFile(bam_path, "rb")
+        state.bind_header(state.bam.header)
     bam = state.bam
-    if True:
+    writers: dict[str, Any] = {}
+    paths: dict[str, str] = {}
+    try:
+        for stream in streams:
+            path = os.path.join(tmp_dir, f"{stream}_{chunk_index:06d}.bam")
+            writers[stream] = pysam.AlignmentFile(path, "wb", header=state.header)
+            paths[stream] = path
         bam.seek(start_vo)
-        results: list[TemplateResult] = []
+        meta: list[tuple[str, str | None]] = []
         obs: list[tuple[bytes, bytes, bytes, bytes, bytes, bytes]] = []
         group: list[Any] = []
         current_name: str | None = None
@@ -201,19 +228,23 @@ def _process_chunk_range(
             if name is None:
                 raise DataInvariantError("BAM record without QNAME")
             if group and name != current_name:
-                result = process_template(group, state)
-                results.append(result)
+                result = process_template(group, state, emit_writers=writers)
+                meta.append((result.classification, result.merge_reason))
                 if result.observations is not None:
                     obs.append(result.observations)
                 group = []
             group.append(record)
             current_name = name
         if group:
-            result = process_template(group, state)
-            results.append(result)
+            result = process_template(group, state, emit_writers=writers)
+            meta.append((result.classification, result.merge_reason))
             if result.observations is not None:
                 obs.append(result.observations)
-        return results, _chunk_observation_arrays(obs)
+        return meta, paths, _chunk_observation_arrays(obs)
+    finally:
+        for writer in writers.values():
+            with contextlib.suppress(OSError, ValueError):
+                writer.close()
 
 
 def _iter_chunk_ranges(input_file: Any, chunk_size: int) -> Any:
@@ -248,8 +279,15 @@ def _iter_chunk_ranges(input_file: Any, chunk_size: int) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def process_template(records: list[Any], state: _WorkerState) -> TemplateResult:
-    """Process one template into output lines, classification, and observations."""
+def process_template(
+    records: list[Any], state: _WorkerState, emit_writers: dict[str, Any] | None = None
+) -> TemplateResult:
+    """Process one template into output lines, classification, and observations.
+
+    With ``emit_writers`` (stream name -> object with ``write(record)``),
+    output records are written directly and ``out_lines`` stays empty —
+    the caller owns serialization-free emission.
+    """
     if not records:
         raise DataInvariantError("empty template")
     name = records[0].query_name
@@ -316,17 +354,29 @@ def process_template(records: list[Any], state: _WorkerState) -> TemplateResult:
     out_lines: list[tuple[str, str]] = []
     if state.cfg.mode == "adjust":
         for record in records:
-            out_lines.append(("adjusted", record.to_string()))
+            if emit_writers is None:
+                out_lines.append(("adjusted", record.to_string()))
+            else:
+                emit_writers["adjusted"].write(record)
     elif merged_line is not None:
         # The consensus record replaces the primary mates; only non-primary
         # records (which by policy prevent merging) could continue, so this
         # template never duplicates into the unmerged output.
-        out_lines.append(("merged", merged_line))
+        if emit_writers is None:
+            out_lines.append(("merged", merged_line.to_string()))
+        else:
+            emit_writers["merged"].write(merged_line)
         for record in others:
-            out_lines.append(("unmerged", record.to_string()))
+            if emit_writers is None:
+                out_lines.append(("unmerged", record.to_string()))
+            else:
+                emit_writers["unmerged"].write(record)
     else:
         for record in records:
-            out_lines.append(("unmerged", record.to_string()))
+            if emit_writers is None:
+                out_lines.append(("unmerged", record.to_string()))
+            else:
+                emit_writers["unmerged"].write(record)
     return TemplateResult(classification, merge_reason, out_lines, obs_payload)
 
 
@@ -379,8 +429,8 @@ def _core_merge(
 
 def _both_mapped(
     r1: Any, r2: Any, others: list[Any], state: _WorkerState
-) -> tuple[str | None, str, str | None, tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None]:
-    """Jointly adjust a both-mapped pair; returns (merged SAM line, class, reason, obs)."""
+) -> tuple[Any | None, str, str | None, tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None]:
+    """Jointly adjust a both-mapped pair; returns (merged record, class, reason, obs)."""
     cfg = state.cfg
     tid1, tid2 = r1.reference_id, r2.reference_id
     if tid1 < 0 or tid2 < 0:
@@ -466,7 +516,7 @@ def _both_mapped(
             return _attempt_rescue(r1, r2, cands1, cands2, others, obs_payload, state)
         return None, BOTH_ALIGNED, outcome.reason, obs_payload
     merged_record = _build_merged_record(r1.query_name, outcome, contig, state)
-    return merged_record.to_string(), MERGEABLE, None, obs_payload
+    return merged_record, MERGEABLE, None, obs_payload
 
 
 def _rescue_shape_blocked(r1: Any, r2: Any, others: list[Any]) -> bool:
@@ -500,7 +550,7 @@ def _attempt_rescue(
     others: list[Any],
     obs_payload: tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None,
     state: _WorkerState,
-) -> tuple[str | None, str, str | None, tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None]:
+) -> tuple[Any | None, str, str | None, tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None]:
     """Attempt joint low-MAPQ rescue for an eligible template.
 
     Rescue relocates the mates to the unique compatible joint placement
@@ -537,7 +587,7 @@ def _attempt_rescue(
     merged_record = _build_merged_record(
         r1.query_name, merged, state.contig(r1.reference_id), state, rescued=True
     )
-    return merged_record.to_string(), MERGEABLE, None, None
+    return merged_record, MERGEABLE, None, None
 
 
 _DISCOVER_CACHE_CAP = 262_144
@@ -846,41 +896,81 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                     ("unmerged", "unmerged_bam"),
                 ):
                     if role in outputs:
-                        writers[stream] = _BamWriter(outputs[role], header_obj)
+                        # Writers share the INPUT header object so records
+                        # stream through pysam's fast same-header path; the
+                        # output @PG header is stamped at publish time.
+                        writers[stream] = _BamWriter(outputs[role], input_file.header)
 
                 aggregator = FastDisagreementAccumulator(cfg)
                 aggregator.set_spill_dir(tmpdir)
 
-                def handle(result: TemplateResult) -> None:
-                    stats.add(result.classification)
-                    if result.merge_reason:
-                        reasons[result.merge_reason] += 1
-                    for stream, line in result.out_lines:
-                        writers[stream].write(pysam.AlignedSegment.fromstring(line, header_obj))
+                def on_meta(classification: str, merge_reason: str | None) -> None:
+                    stats.add(classification)
+                    if merge_reason:
+                        reasons[merge_reason] += 1
 
                 chunks = _iter_chunks(input_file, cfg.chunk_size)
+                chunk_files: dict[str, list[str]] = {}
                 if cfg.threads == 1:
-                    state = _WorkerState(cfg, header_obj)
+                    state = _WorkerState(cfg, input_file.header)
                     try:
                         for chunk in chunks:
-                            results = []
                             obs = []
                             for records in chunk:
-                                result = process_template(records, state)
-                                results.append(result)
+                                result = process_template(records, state, emit_writers=writers)
+                                on_meta(result.classification, result.merge_reason)
                                 if result.observations is not None:
                                     obs.append(result.observations)
-                            for result in results:
-                                handle(result)
                             aggregator.add_chunk(*_chunk_observation_arrays(obs))
                     finally:
                         state.refcache.close()
                 else:
-                    _run_parallel(input_file, stream_path, cfg, header_dict, handle, aggregator)
+                    chunk_files = _run_parallel(
+                        input_file,
+                        stream_path,
+                        cfg,
+                        on_meta,
+                        aggregator,
+                        tmpdir,
+                        tuple(writers.keys()),
+                    )
 
                 for writer in writers.values():
                     writer.close()
                     tmp_files.append(writer.tmp_path)
+                if writers and str(header_obj) != str(input_file.header):
+                    header_sam = os.path.join(tmpdir, "pairloom_out_header.sam")
+                    with open(header_sam, "w") as fh:
+                        fh.write(str(header_obj))
+                    for writer in writers.values():
+                        reheadered = Path(str(writer.tmp_path) + ".rh")
+                        try:
+                            with open(reheadered, "wb") as fh:
+                                subprocess.run(
+                                    ["samtools", "reheader", header_sam, str(writer.tmp_path)],
+                                    stdout=fh,
+                                    check=True,
+                                )
+                        except (OSError, subprocess.CalledProcessError) as exc:
+                            raise OutputError(
+                                f"output reheader failed for {writer.tmp_path}: {exc}"
+                            ) from exc
+                        os.replace(reheadered, writer.tmp_path)
+                if cfg.threads != 1:
+                    # Parallel path: concatenate the workers' per-chunk BAMs
+                    # (identical headers; chunk order == template order) into
+                    # each stream's temp file, replacing the empty header-only
+                    # stream the writer created.
+                    for stream, writer in writers.items():
+                        files = chunk_files.get(stream) or []
+                        if not files:
+                            continue
+                        try:
+                            pysam.samtools.cat("-o", str(writer.tmp_path), *files)
+                        except (OSError, ValueError) as exc:
+                            raise OutputError(
+                                f"output concatenation failed for {stream}: {exc}"
+                            ) from exc
 
                 disag_tmp = Path(str(cfg.disagreement_parquet) + f".pairloom-tmp-{os.getpid()}")
                 stats_tmp = Path(str(cfg.read_stats_parquet) + f".pairloom-tmp-{os.getpid()}")
@@ -1018,56 +1108,76 @@ def _run_parallel(
     input_file: Any,
     stream_path: str,
     cfg: PairLoomConfig,
-    header_dict: dict,
-    handle: Any,
+    on_meta: Any,
     aggregator: Any,
-) -> None:
+    tmp_dir: str,
+    streams: tuple[str, ...],
+) -> dict[str, list[str]]:
     """Process chunks in a process pool with bounded, ordered submission.
 
     Chunks are virtual-offset ranges; each worker streams its range from
-    ``stream_path`` itself, so records never serialize across the IPC
-    boundary. The pool forks when the platform allows it (warm imports;
-    no re-exec of the interpreter per worker).
+    ``stream_path`` and writes its output records into per-chunk BAM files,
+    so records never serialize across the IPC boundary in either direction.
+    Returns each stream's chunk file list in chunk order for the final
+    concatenation. The pool forks when the platform allows it (warm
+    imports; no re-exec of the interpreter per worker).
     """
     import multiprocessing
 
     methods = multiprocessing.get_all_start_methods()
     ctx = multiprocessing.get_context("fork" if "fork" in methods else "spawn")
     max_inflight = cfg.threads * 2
+    chunk_files: dict[str, list[str]] = {stream: [] for stream in streams}
     with ProcessPoolExecutor(
         max_workers=cfg.threads,
         mp_context=ctx,
         initializer=_worker_init,
-        initargs=(cfg, header_dict),
+        initargs=(cfg,),
     ) as pool:
         pending: deque = deque()
+        chunk_index = 0
 
         def submit_next(start_vo: int, end_vo: int) -> None:
-            pending.append(pool.submit(_process_chunk_range, stream_path, start_vo, end_vo))
+            nonlocal chunk_index
+            pending.append(
+                pool.submit(
+                    _process_chunk_range,
+                    stream_path,
+                    start_vo,
+                    end_vo,
+                    chunk_index,
+                    tmp_dir,
+                    streams,
+                )
+            )
+            chunk_index += 1
 
         try:
             for start_vo, end_vo in _iter_chunk_ranges(input_file, cfg.chunk_size):
                 submit_next(start_vo, end_vo)
                 while len(pending) >= max_inflight:
-                    _drain_one(pending, handle, aggregator)
+                    _drain_one(pending, on_meta, aggregator, chunk_files)
             while pending:
-                _drain_one(pending, handle, aggregator)
+                _drain_one(pending, on_meta, aggregator, chunk_files)
         except BaseException:
             for future in pending:
                 future.cancel()
             raise
+    return chunk_files
 
 
-def _drain_one(pending: deque, handle: Any, aggregator: Any) -> None:
+def _drain_one(pending: deque, on_meta: Any, aggregator: Any, chunk_files: dict) -> None:
     future = pending.popleft()
     try:
-        results, arrays = future.result()
+        meta, paths, arrays = future.result()
     except PairLoomError:
         raise
     except Exception as exc:
         raise WorkerError(f"worker chunk failed: {exc}") from exc
-    for result in results:
-        handle(result)
+    for classification, merge_reason in meta:
+        on_meta(classification, merge_reason)
+    for stream, path in paths.items():
+        chunk_files[stream].append(path)
     aggregator.add_chunk(*arrays)
 
 

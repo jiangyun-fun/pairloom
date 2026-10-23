@@ -17,6 +17,7 @@ cli = "pairloom --help"
 core = "python rust/install_core.py"
 
 [dependencies]
+samtools = "*"
 python = ">=3.12,<3.14"
 numpy = ">=2.5.4,<3"
 pyarrow = ">=25.0.0,<26"
@@ -27,7 +28,6 @@ pip = "*"
 pytest = "*"
 pytest-timeout = "*"
 ruff = "*"
-samtools = "*"
 
 [feature.dev.pypi-dependencies]
 pairloom = { path = ".", editable = true }
