@@ -906,8 +906,8 @@ Process the full GO00009 S19 dataset (6.08M templates) in ≤200 s wall at 4 wor
 
 ### result
 
-1. Implemented: batched Rust core (structure build, try_merge, aggregation, MD/NM) plus worker-side blob aggregation with numpy reduction; memoized rescue scans, discovery, contig keys; virtual-offset chunk streaming with fork workers; chunk default 256 to 8192.
-2. Verified: equivalence gate PASS on the pilot at every stage and on the full dataset — merged BAM 5,975,808 records, unmerged 281,369, disagreement table 46,812 rows, read-stats, done line all identical to baseline.
+1. Implemented: batched Rust core, blob aggregation with numpy reduction, memoized rescue/discovery, virtual-offset chunk streaming, chunk default 256 to 8192.
+2. Verified: equivalence gate PASS at every stage and full scale — 5,975,808 merged, 281,369 unmerged records, 46,812 disagreement rows, read-stats, done line identical.
 3. Measured: full run 1,938 s to 173.6 s quiet machine (11.2x) / 227–229 s under concurrent load; suite 233 passed (51 new parity tests); lint/format clean.
 4. Documented: `pixi run core` build task (AGENTS/README); load sensitivity and the queued worker-side-writing lever recorded.
 
@@ -934,7 +934,7 @@ Implement worker-side output writing (workers write per-chunk BAMs; main only co
 
 ### result
 
-1. Implemented: process_template emits records directly to writers (no SAM text on the hot path); workers produce per-chunk BAMs sharing the input header object; main concatenates (bounded 64-way cascading cat) and stamps the @PG output header once per stream via samtools reheader; samtools is now a runtime dependency.
+1. Implemented: process_template emits straight to writers; workers write per-chunk BAMs; main concatenates (bounded 64-way cat) and stamps the @PG header; samtools now a runtime dep.
 2. Verified: equivalence PASS on the pilot (1 and 4 threads) and on the full dataset; suite 233 passed; peak RSS bounded (494 MB at 1,553 chunks vs 8.15 GB before the fan-in fix).
 3. Diagnosed: yesterday's 173.6 s vs 227–229 s spread was mostly a cli.py chunk-size default bug (256 overriding the 8192 config default), not machine load; now fixed at both sites.
 4. Measured (final binary, chunk 16384): 177.3 s at background load ~8; 236 s at ~2x oversubscription; 678 s at load 44. Equivalence PASS at every tier.
@@ -961,8 +961,8 @@ For the benchmark categories where exactly one tool merged a pair, explain why t
 
 ### result
 
-1. Answered: fastp-only (92,817 pairs — PairLoom refused) splits into placement-ambiguity rescue refusals (~41k, both mates MAPQ<20), unmapped mates (~7.5k), and structural refusals at good MAPQ (~45k: cross-contig concatemers, non-primary records, indel/orientation conflicts).
-2. Answered: PairLoom-only (2,813 pairs — fastp refused) are reads whose overlap mismatch counts exceed fastp's diff limits (sampled rejections at 135-150 bp overlaps); PairLoom merges them via quality-gated consensus, 86% re-aligning imperfectly (error-laden).
+1. Answered: fastp-only (92,817 pairs) = ~41k MAPQ<20 rescue refusals, ~7.5k unmapped mates, ~45k structural refusals (cross-contig, non-primary, indel/orientation conflicts).
+2. Answered: PairLoom-only (2,813 pairs) = fastp diff-limit rejections at 135-150 bp overlaps; PairLoom merges via quality-gated consensus; 86% re-align imperfectly (error-laden).
 3. Noted: the asymmetry is 33:1, and PairLoom's refusals concentrate on pairs whose fastp merge lacks a consistent single-fragment placement.
 
 ### change
@@ -982,8 +982,8 @@ For the 229,428 pairs where both tools merged but emitted different sequences, d
 
 ### result
 
-1. Measured (full dataset, SE NM to the panel): PairLoom matches the design exactly in 108,722 (47.4%) vs fastp 14,804 (6.5%); mean NM 0.763 vs 1.364; head-to-head PairLoom strictly closer in 148,921 (65%), fastp closer in 19,440 (8.5%), tie 61,067.
-2. Answered: on the design-proxy criterion PairLoom's consensus is correct far more often, without copying the reference (its policy only picks between mate bases by quality). At genuinely undecidable equal-quality conflicts, correctness is undefined; PairLoom emits N(q2) instead of guessing.
+1. Measured: full-dataset SE NM to panel — exact design match 108,722 (47.4%) vs 14,804 (6.5%); head-to-head PairLoom closer 148,921 (65%) vs fastp 19,440 (8.5%), tie 61,067.
+2. Answered: on the design-proxy criterion PairLoom's consensus wins far more often; at equal-quality conflicts it emits N(q2) rather than guess, where correctness is undefined.
 3. Caveated: the panel is a proxy (synthesis errors confound both arms equally), and 8.5% of pairs still favor fastp — not a blanket win.
 
 ### change
@@ -1003,7 +1003,7 @@ Export the full-dataset one-tool-only benchmark buckets as separate, usable BAM 
 
 ### result
 
-1. Implemented: results/exports/fastp_only.se.bam (92,817 fastp-merged reads, SE-aligned to the panel with competing secondaries kept; 133,483 records) and results/exports/pairloom_only.merged.bam (2,813 PairLoom consensus records verbatim, tags intact).
+1. Implemented: fastp_only.se.bam (92,817 reads, SE-aligned, secondaries kept, 133,483 records) and pairloom_only.merged.bam (2,813 consensus records verbatim, tags intact).
 2. Verified: both coordinate-sorted, indexed, samtools quickcheck-passed; primary counts match the per_pair_full.parquet bucket sizes exactly.
 3. Recorded: qname lists beside the BAMs; .gitignore exception added; committed in the analysis repo.
 
@@ -1027,7 +1027,7 @@ The user asked why some qnames in fastp_only.se.bam have only one row while othe
 ### result
 
 1. Answered: the file is single-end (one row per alignment); extra rows appear only as secondary/supplementary alignments. Single-row = exactly one reported alignment.
-2. Measured: 52,493 qnames have 1 row — 40,271 error/indel-bearing reads aligned uniquely but imperfectly (MAPQ<60), 5,926 unalignable (single unmapped row), ~5,109 structurally-refused pairs aligning cleanly (MAPQ 60). 40,324 qnames have 2+ rows (repeat secondaries and concatemer supplementaries).
+2. Measured: 52,493 qnames have 1 row (unique-imperfect MAPQ<60, unalignable, clean MAPQ-60 refusals); 40,324 have 2+ rows (repeat secondaries, concatemer supplementaries).
 3. Noted: the composition follows directly from the bucket being PairLoom's refusals (unsupported alignments, chimeras, unalignable mates).
 
 ### change
@@ -1047,7 +1047,7 @@ For the two exported bucket BAMs, provide paired-end style output containing onl
 
 ### result
 
-1. Implemented: results/exports/{fastp_only.pe.bam,pairloom_only.pe.bam} — the original bwa-mem2 paired records (both mates, 0x1/0x40/0x80 flags, mate coordinates and TLEN intact) for the same qname buckets, secondary/supplementary dropped.
+1. Implemented: fastp_only.pe.bam and pairloom_only.pe.bam — original bwa-mem2 paired records for the same buckets, both mates, mate fields intact, secondary/supplementary dropped.
 2. Verified: 185,634 = 92,817 x 2 and 5,626 = 2,813 x 2 records; quickcheck passed; queryname-sorted so each pair is adjacent.
 3. Noted: name-ordered files carry no .bai; first records illustrate the bucket mechanisms (cross-contig pair flags 65/129; error-laden 113S37M mate flags 83/163).
 
@@ -1070,7 +1070,7 @@ The user asked what each tool produced for one specific pair from the fastp-only
 
 ### result
 
-1. Answered: fastp emitted a 161 bp merged read that spans two oligos (F1-942 + F1-1194, a head-to-tail concatemer with a 1 bp junction offset); its SE alignment splits into 80M81S primary on F1-942 plus 80M81H supplementary on F1-1194, both MAPQ 60.
+1. Answered: fastp emitted a 161 bp read spanning two oligos (F1-942 + F1-1194 concatemer); SE alignment splits 80M81S primary + 80M81H supplementary, both MAPQ 60.
 2. Answered: PairLoom refused the pair (mates on different contigs, ZC:Z:both_aligned, records passed through unchanged) — the different_contig class in one example.
 3. Noted: fastp's sequence is a faithful read of the dimer molecule; PairLoom's refusal reflects its single-fragment placement contract.
 
@@ -1091,7 +1091,7 @@ The user asked whether the existing evidence-level reasons are already part of p
 
 ### result
 
-1. Answered: yes in aggregate, no per-read. The done line's merge-reasons={...} dict counts every fired reason; 15 merge reasons (merge.py:55-69) plus 4 rescue failure statuses (rescue.py:52-56) = 19 reason strings; corrected my earlier imprecise count of 16.
+1. Answered: aggregate yes, per-read no. The done line's merge-reasons dict counts all 19 strings (15 merge + 4 rescue); per-read tags carry only ZC and ZR; my earlier count of 16 was wrong.
 2. Verified: per-read tags carry only classification (ZC via classify.py:62-69) and the rescue-success marker (ZR); the per-template merge_reason is counted and discarded.
 3. Noted: the proposed classification change is therefore surfacing, not computation — no new logic beyond the chimeric_read subtype check.
 
@@ -1112,7 +1112,7 @@ The user asked whether the 19 detailed reason categories should replace --read-s
 
 ### result
 
-1. Answered: augment, not replace, in both places. Classifications and reasons are orthogonal: the 3 unaligned classifications and mergeable have no reason, so replacement leaves a mixed-domain ZC and drops read-stats rows.
+1. Answered: augment, not replace — classifications and reasons are orthogonal; unaligned classes have no reason, so replacement leaves a mixed ZC and drops read-stats rows.
 2. Reasoned: parquet schemas are declared stable API (parquetout.py:3) and ZC is documented (README:362); the reason rollup belongs in the queued --merge-stats-parquet and per-read in a new ZM tag.
 3. Noted: replacement is cheap today (tool is 5 days old, no external consumers) if the user prefers single-tag simplicity; trade-off stated, decision left with the user.
 
@@ -1133,8 +1133,8 @@ The user asked how unmapped reads flow through pairloom.
 
 ### result
 
-1. Answered: unmapped records are never dropped; templates group all records by qname; exactly-one-mapped templates classify left/right_aligned_only and the mapped mate gets single-read leftmost normalization while the unmapped mate keeps no alignment work but receives SAM-convention field updates (mate locus, RNEXT/PNEXT to the adjusted position, MQ mirroring, 0x2 cleared).
-2. Verified from source: _adjust_single body (pipeline.py) and README Record policy lines 60-80; unmapped records are tagged ZC:Z:<classification> and pass to the unmerged stream; neither-mapped templates classify neither_aligned untouched.
+1. Answered: unmapped records are never dropped. One-mapped templates classify left/right_aligned_only; the mapped mate is normalized, the unmapped mate gets SAM-convention mate-field updates only.
+2. Verified from source: _adjust_single in pipeline.py and the README record policy; unmapped mates never enter merging or rescue; 12,730 such templates at full scale.
 3. Noted: unmapped mates never enter merging or rescue; benchmark figures: 12,730 such templates at full scale, 6,481 of them fastp-only merges.
 
 ### change
@@ -1154,8 +1154,8 @@ Go ahead with the augment design: ZM per-record reason tag, chimeric_read subtyp
 
 ### result
 
-1. Implemented: ZM:Z:<reason> (--reason-tag default ZM, validated) on both primaries of unmerged failed templates; chimeric_read as clip-containment evidence subtype of different_contig; --merge-stats-parquet with classification/reason/family/overlap-histogram rows.
-2. Verified: pilot equivalence PASS modulo exactly the two intended deltas (--strip-tag ZM --normalize-reason-split gate options); 453 different_contig split 242+211; histogram sums to mergeable 97,748; suite 238 passed; lint/format clean; pilot wall unchanged.
+1. Implemented: ZM:Z:<reason> on failed templates' primaries (--reason-tag, validated); chimeric_read clip-containment subtype; --merge-stats-parquet with classification/reason/family/overlap rows.
+2. Verified: pilot equivalence PASS modulo the two intended deltas (gate --strip-tag ZM --normalize-reason-split); 453 different_contig split 242+211; suite 238 passed; wall unchanged.
 3. Documented: README reason/tag/stats sections; AGENTS test count; plan/report pair committed.
 
 ### change
@@ -1180,7 +1180,7 @@ Re-run the pilot dataset with the per-read failure classification and report the
 ### result
 
 1. Executed: pilot re-run (5.5 s, 165 MB); artifacts committed to the analysis repo under results/classified_pilot/ (BAMs, both parquets, merge-stats).
-2. Reported: 453 former different_contig -> 242 plain + 211 chimeric_read; ZM per-record distribution matches the done-line reasons exactly (2 records per failed template); overlap histogram peaks at 80 bp (89,175 pairs) summing to 97,748.
+2. Reported: 453 former different_contig -> 242 plain + 211 chimeric_read; ZM record distribution matches the done line (2 per failed template); histogram peaks 80 bp, sums 97,748.
 3. Verified: equivalence PASS against the pre-classification baseline modulo the two intended deltas.
 
 ### change
@@ -1205,7 +1205,7 @@ The user asked for the primary records fastp merged but PairLoom did not, with a
 ### result
 
 1. Implemented: results/exports/fastp_only_nonchimeric.pe.bam (pilot scale) — 1,210 pairs / 2,420 primary records, queryname-sorted, quickcheck-passed, with the qname list and README beside it.
-2. Reported composition: rescue_ambiguous 370, rescue_unsupported_alignment 305, different_contig 232, non_primary_records 230, indel_conflict 28, insertion_conflict 27, orientation_incompatible 18; excluded 211 chimeric_read pairs and 102 unmapped-mate pairs (no reason tag).
+2. Reported composition: rescue_ambiguous 370, rescue_unsupported 305, different_contig 232, non_primary 230, indel 28, insertion 27, orientation 18; excluded 211 chimeric + 102 unmapped-mate pairs.
 
 ### change
 
@@ -1226,7 +1226,7 @@ The user asked that fastp_only_nonchimeric.pe.bam also carry the failed reason.
 
 ### result
 
-1. Implemented: rebuilt the export from the classified run's unmerged BAM, so both primary records of every pair now carry ZC:Z:both_aligned and ZM:Z:<reason> alongside PairLoom's adjusted placement tags (MD/NM/MQ).
+1. Implemented: rebuilt from the classified run's unmerged BAM; both primaries now carry ZC:Z:both_aligned and ZM:Z:<reason> plus PairLoom's adjusted placement tags (MD/NM/MQ).
 2. Verified: 2,420 records, quickcheck passed, ZM distribution matches the per-reason pair counts exactly (740/610/464/460/56/54/36 records for the 7 reasons).
 
 ### change
@@ -1234,3 +1234,30 @@ The user asked that fastp_only_nonchimeric.pe.bam also carry the failed reason.
 Files (analysis repo): Updated results/exports/{fastp_only_nonchimeric.pe.bam,README.md}.
 
 Git: commit in the analysis repo plus this docs entry in pairloom; neither pushed.
+
+## Re-run the pilot benchmark on a deduplicated reference
+
+```
+level: medium
+date: 2026-10-26
+cross-repo: pairloom, 20261022.bench_pairloom_vs_fastp.GO00009_S19
+```
+
+### description
+
+The user reported that reference sequences appear multiple times under different names, asked to keep one sequence per duplicate group, and to run the pilot data again. The first occurrence per unique sequence is kept; the mapping is recorded.
+
+### result
+
+1. Verified: the GO00009 panel holds 21,839 records but 21,635 unique sequences — 194 duplicate groups (max size 3), 204 removable names.
+2. Implemented: scripts/10_dedup_ref.py and scripts/11_run_pilot_dedup.sh in the benchmark repo; the pilot re-ran end to end against the deduplicated panel with unchanged fastp arm and mates.
+3. Answered: fastp_only fell 1,523 to 945 and both_identical rose +560; all 578 recovered pairs were old MAPQ-0 rescue refusals; no pair regressed.
+4. Verified: reason counts reconcile (860 failed = reason sum; merge-stats covers all 99,401 templates; ZM records are 2x pair counts); report at report/dedup_pilot_summary.qmd.
+
+### change
+
+Files (analysis repo): Created scripts/{10_dedup_ref.py,11_run_pilot_dedup.sh}, results/{summary_dedup.json,per_pair_dedup.parquet,dedup_ref_stats.json}, results/logs_dedup/, report/dedup_pilot_summary.qmd.
+
+Files (pairloom repo): Updated docs/misc/requirements_audit.qmd (this entry) and docs/misc/next_and_recommendation.qmd.
+
+Environments: none new. Git: analysis-repo commit plus this docs commit in pairloom; neither pushed.

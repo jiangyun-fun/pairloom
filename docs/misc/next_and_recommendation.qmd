@@ -6,16 +6,16 @@ author: "Yun Jiang"
 ## next
 
 1. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
-3. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk) so genome-scale runs avoid the per-template linear scan.
-4. M: add a `--merge-stats-parquet` optional output with overlap-length distributions and merge-rejection reason counts.
-5. L: build a calibrated joint-MAPQ model for rescued pairs to replace the flat output MAPQ 0.
-6. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke, `pixi run core` build) with Dependabot.
-7. L: promote the synthetic known-fragment benchmark into the repo suite under `benchmarks/`.
+2. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk).
+3. M: re-run the FULL benchmark with the deduplicated panel to confirm the pilot-level shifts at 6.1M-pair scale.
+4. L: build a calibrated joint-MAPQ model for rescued pairs to replace the flat output MAPQ 0.
+5. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke, `pixi run core` build) with Dependabot.
+6. L: promote the synthetic known-fragment benchmark into the repo suite under `benchmarks/`.
 
 ## recommendation
 
-1. M: choose between fastp and PairLoom by required semantics — sequence recovery vs placement honesty — not by merge rate.
-2. M: treat merge-reason summaries (now including `rescue_*` reasons) as pipeline telemetry in downstream QC reports.
-3. M: for low-MAPQ-heavy cohorts on large references, measure joint-rescue cost on a sample first; `--no-rescue` opts out.
-4. L: before relying on `--force-mapq60-exact`, quantify the repeat content of the target reference.
-5. L: for very large cohorts, prefer `--threads 4` with `--chunk-size 256`.
+1. M: use ZM to filter QC populations per family — e.g. `samtools view -e 'ZM=="chimeric_read"'` isolates concatemers.
+2. M: choose between fastp and PairLoom by required semantics — sequence recovery vs placement honesty — not by merge rate.
+3. M: deduplicate identical panel entries upstream or keep a duplicate-name map; 194 duplicate groups drove 578 MAPQ-0 refusals in the pilot.
+4. M: for low-MAPQ-heavy cohorts on large references, measure joint-rescue cost on a sample first; `--no-rescue` opts out.
+5. L: before relying on `--force-mapq60-exact`, quantify the repeat content of the target reference.
