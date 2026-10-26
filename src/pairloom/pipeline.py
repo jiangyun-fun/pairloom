@@ -154,9 +154,15 @@ class _WorkerState:
 _STATE: _WorkerState | None = None
 
 
-def _worker_init(cfg: PairLoomConfig) -> None:
+def _worker_init(cfg: PairLoomConfig, out_header_dict: dict) -> None:
     global _STATE
-    _STATE = _WorkerState(cfg, None)
+    state = _WorkerState(cfg, None)
+    # The output header (input header + PairLoom @PG records) is used by
+    # chunk 0's writers: `samtools cat` keeps the FIRST input's header, so
+    # the concatenated stream already carries the output header and no
+    # post-hoc reheader pass is needed.
+    state.out_header = pysam.AlignmentHeader.from_dict(out_header_dict)
+    _STATE = state
 
 
 def _ensure_state() -> _WorkerState:
@@ -216,14 +222,20 @@ def _process_chunk_range(
     try:
         for stream in streams:
             path = os.path.join(tmp_dir, f"{stream}_{chunk_index:06d}.bam")
-            writers[stream] = pysam.AlignmentFile(path, "wb", header=state.header)
+            header = state.out_header if chunk_index == 0 else state.header
+            writers[stream] = pysam.AlignmentFile(path, "wb", header=header)
             paths[stream] = path
         bam.seek(start_vo)
         meta: list[tuple[str, str | None]] = []
         obs: list[tuple[bytes, bytes, bytes, bytes, bytes, bytes]] = []
         group: list[Any] = []
         current_name: str | None = None
-        while bam.tell() < end_vo:
+        # Virtual offsets only need checking at template-group boundaries:
+        # records within a group always belong to the chunk, and ``end_vo``
+        # sits on a boundary by construction.
+        while True:
+            if bam.tell() >= end_vo:
+                break
             record = next(bam)
             name = record.query_name
             if name is None:
@@ -976,6 +988,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                         input_file,
                         stream_path,
                         cfg,
+                        out_header_dict,
                         on_meta,
                         aggregator,
                         tmpdir,
@@ -985,7 +998,10 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                 for writer in writers.values():
                     writer.close()
                     tmp_files.append(writer.tmp_path)
-                if writers and str(header_obj) != str(input_file.header):
+                needs_reheader = cfg.threads == 1 or not any(
+                    chunk_files.get(stream) for stream in writers
+                )
+                if writers and needs_reheader and str(header_obj) != str(input_file.header):
                     header_sam = os.path.join(tmpdir, "pairloom_out_header.sam")
                     with open(header_sam, "w") as fh:
                         fh.write(str(header_obj))
@@ -1150,6 +1166,7 @@ def _run_parallel(
     input_file: Any,
     stream_path: str,
     cfg: PairLoomConfig,
+    header_dict: dict,
     on_meta: Any,
     aggregator: Any,
     tmp_dir: str,
@@ -1174,7 +1191,7 @@ def _run_parallel(
         max_workers=cfg.threads,
         mp_context=ctx,
         initializer=_worker_init,
-        initargs=(cfg,),
+        initargs=(cfg, header_dict),
     ) as pool:
         pending: deque = deque()
         chunk_index = 0

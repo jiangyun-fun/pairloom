@@ -470,7 +470,7 @@ checker.
    orientation-independent (`NM:i:0`, `MD:<span>`).
 5. `--max-fragment-length` defaults to 1000; `--min-overlap` to 0 (zero
    allows adjacent joining); `--min-base-quality`/`--min-mapq` to 20;
-   window 500; candidates 10; chunk 8192; batch 65536; aggregation spill
+   window 500; candidates 10; chunk 16384; batch 65536; aggregation spill
    threshold 10^6 positions; joint rescue is enabled unless `--no-rescue`.
 6. Non-paired primary records classify as `left_aligned_only`.
 

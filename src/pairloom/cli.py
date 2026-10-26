@@ -174,8 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
     io_grp.add_argument(
         "--chunk-size",
         type=int,
-        default=8192,
-        help="templates per work unit in parallel runs (default 8192)",
+        default=16384,
+        help="templates per work unit in parallel runs (default 16384)",
     )
     io_grp.add_argument(
         "--sort-output",

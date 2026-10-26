@@ -252,16 +252,7 @@ class FastDisagreementAccumulator:
         self._spill_paths: list[str] = []
         self._spill_seq = 0
         self.reported_positions = 0
-        # per-chunk buffers
-        self._buf_keys: list[np.ndarray] = []
-        self._buf_dp: list[np.ndarray] = []
-        self._buf_disg: list[np.ndarray] = []
-        self._buf_ref: list[np.ndarray] = []
-        self._buf_ak: list[np.ndarray] = []
-        self._buf_ab: list[np.ndarray] = []
-        self._buf_as_: list[np.ndarray] = []
-        self._buf_ac: list[np.ndarray] = []
-        self._pending = 0
+        self._alts: dict[tuple[int, int, int], int] = {}
         # reduced state (always fully reduced between calls)
         self._r_keys: np.ndarray | None = None
         self._r_dp: np.ndarray | None = None
@@ -286,90 +277,87 @@ class FastDisagreementAccumulator:
         astrand: np.ndarray,
         acount: np.ndarray,
     ) -> None:
+        """Merge one chunk's pre-sorted aggregates into the reduced state.
+
+        The Rust core emits chunk arrays with ascending, chunk-unique keys,
+        so each chunk merges in O(new rows log reduced positions) via
+        searchsorted — no global re-sort, no periodic churn, and spills
+        only when the reduced position count actually exceeds the bound.
+        Alt rows merge through a count dict (they are a small fraction of
+        positions on real data).
+        """
         if keys.size:
-            self._buf_keys.append(keys)
-            self._buf_dp.append(dp)
-            self._buf_disg.append(disg)
-            self._buf_ref.append(ref)
-            self._pending += keys.size
+            self._merge_positions(keys, dp, disg, ref)
         if akeys.size:
-            self._buf_ak.append(akeys)
-            self._buf_ab.append(abase)
-            self._buf_as_.append(astrand)
-            self._buf_ac.append(acount)
-        if self._pending >= self._REDUCE_BUFFER_ROWS:
-            self._reduce()
-
-    # -- reduction ---------------------------------------------------------
-
-    def _reduce(self, force: bool = False) -> None:
-        if self._pending == 0 and self._r_keys is None:
-            return
-        keys = self._concat(self._buf_keys, self._r_keys, np.uint64)
-        dp = self._concat(self._buf_dp, self._r_dp, np.uint64)
-        disg = self._concat(self._buf_disg, self._r_disg, np.uint8)
-        ref = self._concat(self._buf_ref, self._r_ref, np.uint8)
-        self._buf_keys, self._buf_dp, self._buf_disg, self._buf_ref = [], [], [], []
-        uniq, inverse = np.unique(keys, return_inverse=True)
-        n = uniq.size
-        r_dp = np.zeros(n, dtype=np.uint64)
-        np.add.at(r_dp, inverse, dp)
-        r_disg = np.zeros(n, dtype=np.uint8)
-        np.maximum.at(r_disg, inverse, disg)
-        r_ref_min = np.full(n, 255, dtype=np.uint8)
-        np.minimum.at(r_ref_min, inverse, ref)
-        r_ref_max = np.zeros(n, dtype=np.uint8)
-        np.maximum.at(r_ref_max, inverse, ref)
-        if not np.array_equal(r_ref_min, r_ref_max):
-            bad = int(np.flatnonzero(r_ref_min != r_ref_max)[0])
-            key = int(uniq[bad])
-            raise DataInvariantError(
-                f"inconsistent reference base at tid {key >> 32} pos {(key & 0xFFFFFFFF) + 1}"
-            )
-        self._r_keys, self._r_dp, self._r_disg, self._r_ref = uniq, r_dp, r_disg, r_ref_min
-        self._pending = 0
-
-        ak = self._concat(self._buf_ak, self._r_ak, np.uint64)
-        ab = self._concat(self._buf_ab, self._r_ab, np.uint8)
-        as_ = self._concat(self._buf_as_, self._r_as_, np.uint8)
-        ac = self._concat(self._buf_ac, self._r_ac, np.uint64)
-        self._buf_ak, self._buf_ab, self._buf_as_, self._buf_ac = [], [], [], []
-        if ak.size:
-            # Two-level unique: alt keys are full 64-bit position keys, so
-            # packing base/strand into high bits would overflow. Remap
-            # positions to dense indices first, then pack (index, base,
-            # strand) — indices are bounded by the row count.
-            akeys_u, ainv_ak = np.unique(ak, return_inverse=True)
-            composite = (ainv_ak.astype(np.uint64) << 9) | (ab.astype(np.uint64) << 1) | as_
-            auniq, ainv = np.unique(composite, return_inverse=True)
-            m = auniq.size
-            r_ac = np.zeros(m, dtype=np.uint64)
-            np.add.at(r_ac, ainv, ac)
-            self._r_ak = akeys_u[(auniq >> 9)]
-            self._r_ab = ((auniq >> 1) & 0xFF).astype(np.uint8)
-            self._r_as_ = (auniq & 1).astype(np.uint8)
-            self._r_ac = r_ac
-        elif self._r_ak is not None and self._r_ak.size == 0:
-            self._r_ak = None
-
-        over_bound = (
-            self._r_keys is not None and self._r_keys.size > self.cfg.max_aggregation_records
-        )
-        if not force and over_bound:
+            self._merge_alts(akeys, abase, astrand, acount)
+        if (
+            self._r_keys is not None
+            and self._r_keys.size > self.cfg.max_aggregation_records
+        ):
             self._spill_reduced()
 
-    @staticmethod
-    def _concat(bufs: list[np.ndarray], reduced: np.ndarray | None, dtype) -> np.ndarray:
-        parts = [a.astype(dtype, copy=False) for a in bufs]
-        if reduced is not None and reduced.size:
-            parts.append(reduced)
-        if not parts:
-            return np.empty(0, dtype=dtype)
-        if len(parts) == 1:
-            return parts[0]
-        return np.concatenate(parts)
+    def _merge_positions(
+        self, keys: np.ndarray, dp: np.ndarray, disg: np.ndarray, ref: np.ndarray
+    ) -> None:
+        if self._r_keys is None or self._r_keys.size == 0:
+            order = np.argsort(keys, kind="stable")
+            self._r_keys = keys[order]
+            self._r_dp = dp[order].astype(np.uint64, copy=True)
+            self._r_disg = (disg[order] != 0).astype(np.uint8)
+            self._r_ref = ref[order].astype(np.uint8, copy=True)
+            return
+        idx = np.searchsorted(self._r_keys, keys)
+        idx_c = np.minimum(idx, self._r_keys.size - 1)
+        match = self._r_keys[idx_c] == keys
+        # matched positions accumulate
+        m = np.flatnonzero(match)
+        if m.size:
+            mi = idx_c[m]
+            add = np.bincount(mi, weights=dp[m].astype(np.float64), minlength=self._r_keys.size)
+            self._r_dp += add.astype(np.uint64)
+            hits = np.zeros(self._r_keys.size, dtype=bool)
+            hits[mi[disg[m] != 0]] = True
+            self._r_disg = self._r_disg | hits.view(np.uint8)
+            bad = np.flatnonzero(self._r_ref[mi] != ref[m])
+            if bad.size:
+                key = int(keys[m[bad[0]]])
+                raise DataInvariantError(
+                    f"inconsistent reference base at tid {key >> 32} pos "
+                    f"{(key & 0xFFFF_FFFF) + 1}"
+                )
+        # unmatched positions are inserted in key order (keys arrive sorted)
+        new_pos = np.flatnonzero(~match)
+        if new_pos.size:
+            new_idx = idx[new_pos]
+            self._r_keys = np.insert(self._r_keys, new_idx, keys[new_pos])
+            self._r_dp = np.insert(self._r_dp, new_idx, dp[new_pos])
+            self._r_disg = np.insert(self._r_disg, new_idx, (disg[new_pos] != 0))
+            self._r_ref = np.insert(self._r_ref, new_idx, ref[new_pos])
+
+    def _merge_alts(
+        self,
+        akeys: np.ndarray,
+        abase: np.ndarray,
+        astrand: np.ndarray,
+        acount: np.ndarray,
+    ) -> None:
+        if self._alts is None:
+            self._alts = {}
+        counts = self._alts
+        for i in range(akeys.size):
+            key = (int(akeys[i]), int(abase[i]), int(astrand[i]))
+            counts[key] = counts.get(key, 0) + int(acount[i])
+
+    def _reduce(self, force: bool = False) -> None:  # noqa: ARG002 - spill compat
+        """Legacy entry point: everything is merged incrementally now."""
+        if (
+            self._r_keys is not None
+            and self._r_keys.size > self.cfg.max_aggregation_records
+        ):
+            self._spill_reduced()
 
     def _spill_reduced(self) -> None:
+        """Flush the reduced state to a sorted spill file and reset it."""
         if self._r_keys is None or not self._r_keys.size:
             return
         if self._spill_dir is None:  # pragma: no cover - pipeline always sets it
@@ -379,7 +367,7 @@ class FastDisagreementAccumulator:
         _write_spill_rows(path, self._reduced_rows(), "none", self.cfg.parquet_batch_size)
         self._spill_paths.append(path)
         self._r_keys = self._r_dp = self._r_disg = self._r_ref = None
-        self._r_ak = self._r_ab = self._r_as_ = self._r_ac = None
+        self._alts = {}
 
     def _reduced_rows(self) -> Iterator[SpillRow]:
         keys = self._r_keys
@@ -399,23 +387,23 @@ class FastDisagreementAccumulator:
                 )
 
         def alt_rows() -> Iterator[SpillRow]:
-            ak = self._r_ak
-            if ak is None or not ak.size:
+            if not self._alts:
                 return
-            order = np.argsort(ak, kind="stable")
-            for i in order:
-                key = int(ak[i])
-                count = int(self._r_ac[i])
-                forward = self._r_as_[i] == 0
+            grouped: dict[tuple[int, int], list[int]] = {}
+            for (key, base, strand), count in self._alts.items():
+                pair = grouped.setdefault((key, base), [0, 0])
+                pair[strand] += count
+            for key, base in sorted(grouped):
+                adf, adr = grouped[(key, base)]
                 yield (
                     key >> 32,
                     key & 0xFFFFFFFF,
-                    chr(int(self._r_ab[i])),
+                    chr(base),
                     "",
                     0,
                     False,
-                    count if forward else 0,
-                    0 if forward else count,
+                    adf,
+                    adr,
                 )
 
         yield from heapq.merge(base_rows(), alt_rows(), key=itemgetter(0, 1, 2))
