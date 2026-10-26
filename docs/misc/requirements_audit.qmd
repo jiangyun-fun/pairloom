@@ -1503,7 +1503,7 @@ The user asked for a classic BAM that introduces every type of failure reason an
 ### result
 
 1. Implemented: examples/build_classic_bam.py builds classic.fa (5 contigs: plain, duplicate pair, 11x repeat) and classic.bam (24 templates) deterministically.
-2. Verified: default run merges 5 (ordinary, adjacent, equal-qual N, rescued ZR, non-primary ZN) and refuses with 15 distinct reasons x1; four flag runs surface non_primary_records, mapq_below_min, strict_conflict, insufficient_overlap.
+2. Verified: default run merges 5 (ordinary, adjacent, equal-qual N, rescued ZR, non-primary ZN) and refuses with 15 reasons x1; flag runs surface the 4 policy-gated reasons.
 3. Documented: examples/gallery/OUTCOMES.md maps every template to its outcome; empty_consensus marked not exercised (defensive branch, merge.py:219).
 
 ### change
