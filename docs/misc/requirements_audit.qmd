@@ -1417,6 +1417,33 @@ Files (analysis repo): Created scripts/13_run_pilot_nonprimary.sh, results/{summ
 
 Environments: none new. Git: pairloom d99a377 (feat) plus docs commits; analysis f6a8927; none pushed.
 
+## Run the full benchmark on GS4381-PF2-5 with the deduplicated panel and the new default
+
+```
+level: high
+date: 2026-10-26
+cross-repo: pairloom, 20261026.bench_pairloom_vs_fastp.GS4381-PF2-5_S34_L002
+```
+
+### description
+
+The user asked to run the full benchmark with the deduplicated panel and the merge-non-primary default on sample 20260903-GS4381-PF2-5_S34_L002, reference PF2-GG-HX1-5.fa.
+
+### result
+
+1. Verified: the PF2-GG-HX1-5 panel holds no duplicate sequences (3,496 records = 3,496 unique, 288-308 bp), so the deduplicated panel is the source itself.
+2. Implemented: new analysis repo with scripts 00/03/10/11; full run end to end on 4,155,232 prep-surviving pairs; report rendered.
+3. Answered: PairLoom 95.4% mergeable, 43,327 via the non-primary default; 91.4% both_different — fastp's ~198 bp merges are panel-imperfect (spurious overlaps), PairLoom's ~238 bp are 92% panel-exact.
+4. Timed: pairloom merge 2:57 at 4 workers; bwa-mem2 PE 9:15; se_A 22:52 under load vs se_B 9:42.
+
+### change
+
+Files (new analysis repo): Created pixi.toml, README.md, scripts/{00_versions.sh,03_join_classify.py,10_dedup_ref.py,11_run_full_dedup.sh}, results/{summary_full.json,per_pair_full.parquet,logs_full/}, report/full_summary.qmd, docs/misc/requirements_audit.qmd.
+
+Files (pairloom repo): Updated docs/misc/requirements_audit.qmd (this entry), docs/misc/next_and_recommendation.qmd.
+
+Environments: new pixi workspace at the new analysis repo. Git: 8a1e3ca, 4ca9b89 in the new repo; docs commit in pairloom; none pushed.
+
 ```
 level: low
 date: 2026-10-26

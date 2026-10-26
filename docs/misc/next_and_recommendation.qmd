@@ -5,17 +5,18 @@ author: "Yun Jiang"
 
 ## next
 
-1. M: re-run the FULL benchmark with the deduplicated panel and the merge-non-primary default to confirm pilot-level shifts at 6.1M-pair scale.
-2. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
-3. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk).
+1. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment (rescue_unsupported_alignment is now the top reason at full scale: 54,526).
+2. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk).
+3. M: diagnose the PF2 shared-scaffold motif that invites fastp's spurious long overlaps (panel-wide mechanism not yet established).
 4. L: build a calibrated joint-MAPQ model for rescued pairs (and the new MAPQ-0 non-primary class) to replace flat output MAPQ 0.
 5. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke, `pixi run core` build) with Dependabot.
 6. L: promote the synthetic known-fragment benchmark into the repo suite under `benchmarks/`.
+7. L: re-run the GO00009 full benchmark on the deduplicated panel if its full-scale numbers are still wanted.
 
 ## recommendation
 
 1. M: use ZM to filter QC populations per family — e.g. `samtools view -e 'ZM=="chimeric_read"'` isolates concatemers; `ZN == 1` isolates merged dimers.
-2. M: choose between fastp and PairLoom by required semantics — sequence recovery vs placement honesty — not by merge rate.
-3. M: deduplicate identical panel entries upstream or keep a duplicate-name map; 194 duplicate groups drove 578 MAPQ-0 refusals in the pilot.
+2. M: on shared-scaffold panels, prefer placement-gated merging (PairLoom) over pure overlap merging (fastp) — fastp's 20% diff limit admits spurious long overlaps (91.4% of this sample).
+3. M: choose between fastp and PairLoom by required semantics — sequence recovery vs placement honesty — not by merge rate.
 4. M: for low-MAPQ-heavy cohorts on large references, measure joint-rescue cost on a sample first; `--no-rescue` opts out.
 5. L: before relying on `--force-mapq60-exact`, quantify the repeat content of the target reference.
