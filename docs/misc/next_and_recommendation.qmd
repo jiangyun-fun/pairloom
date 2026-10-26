@@ -8,10 +8,12 @@ author: "Yun Jiang"
 1. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment (rescue_unsupported_alignment is now the top reason at full scale: 54,526).
 2. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk).
 3. M: diagnose the PF2 shared-scaffold motif that invites fastp's spurious long overlaps (panel-wide mechanism not yet established).
-4. L: build a calibrated joint-MAPQ model for rescued pairs (and the new MAPQ-0 non-primary class) to replace flat output MAPQ 0.
-5. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke, `pixi run core` build) with Dependabot.
-6. L: promote the synthetic known-fragment benchmark into the repo suite under `benchmarks/`.
-7. L: re-run the GO00009 full benchmark on the deduplicated panel if its full-scale numbers are still wanted.
+4. M: right after the repo goes public, enable branch protection on main (contexts ["ci"]) and secret-scanning push protection — both blocked while private.
+5. M: triage the Dependabot pyo3 0.23→0.30 PR — its CI run passes; merge or close per upgrade appetite.
+6. L: build a calibrated joint-MAPQ model for rescued pairs (and the new MAPQ-0 non-primary class) to replace flat output MAPQ 0.
+7. L: promote the synthetic known-fragment benchmark into the repo suite under `benchmarks/`.
+8. L: re-run the GO00009 full benchmark on the deduplicated panel if its full-scale numbers are still wanted.
+9. L: add a release workflow once the Rust core ships inside the wheel (or with PyPI publication) — the current wheel omits the required core.
 
 ## recommendation
 
@@ -19,4 +21,6 @@ author: "Yun Jiang"
 2. M: on shared-scaffold panels, prefer placement-gated merging (PairLoom) over pure overlap merging (fastp) — fastp's 20% diff limit admits spurious long overlaps (91.4% of this sample).
 3. M: choose between fastp and PairLoom by required semantics — sequence recovery vs placement honesty — not by merge rate.
 4. M: for low-MAPQ-heavy cohorts on large references, measure joint-rescue cost on a sample first; `--no-rescue` opts out.
-5. L: before relying on `--force-mapq60-exact`, quantify the repeat content of the target reference.
+5. M: before going public, review the tracked files carrying `/bioproj` paths and sample IDs — git history retains them, so accept the disclosure knowingly.
+6. M: consider dropping the internal pixi channels (`file:///bioproj/...`, `s3://conda/sibio`) from pixi.toml before going public — installs-from-lock work, but fresh solves by outsiders hit the unreachable s3 channel.
+7. L: before relying on `--force-mapq60-exact`, quantify the repeat content of the target reference.

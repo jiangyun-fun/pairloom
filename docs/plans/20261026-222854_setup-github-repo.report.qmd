@@ -1,0 +1,1085 @@
+---
+title: "Remote GitHub repo setup and public-readiness audit"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧬</text></svg>">
+---
+
+## feature
+
+### CI workflow runs the full suite on GitHub Actions
+
+```
+level: high
+```
+
+#### reason
+
+The workflow ran green on `main` at its first execution. Every step in the job reported success on a clean hosted runner.
+
+#### description
+
+```
+type: [text, table]
+```
+
+1. One job named `ci` runs on pushes to `main` and on pull requests.
+2. It installs the pixi environment from the committed lock, builds the Rust core, then runs `pixi run core`, `lint`, `format`, and `test`.
+3. The job needs a Rust toolchain the lock does not carry, so the workflow adds `rust-toolchain` and caches `rust/target` via `rust-cache`.
+
+| Step | Action or command |
+| --- | --- |
+| Checkout | `actions/checkout@v7` |
+| Pixi env | `prefix-dev/setup-pixi@v0` with cache |
+| Rust | `dtolnay/rust-toolchain@stable`, `Swatinem/rust-cache@v2` |
+| Verify | `pixi run core`, `lint`, `format`, `test` |
+
+#### before
+
+Verification was local only. A contributor or the owner could break the build or the suite and nothing flagged it on GitHub.
+
+#### after
+
+Every push to `main` and every pull request runs the complete check. The badge in the README shows the live status.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Run 40339586894 on commit `9232d5a` (push to `main`): `{"conclusion":"success"}`. All named steps returned `success`, including `Build the Rust core`, `Lint`, `Format check`, and `Tests`.
+- File `.github/workflows/ci.yml` at commit `6f242da`.
+
+:::
+
+### MIT license and manifest metadata completed
+
+```
+level: high
+```
+
+#### reason
+
+GitHub now detects the license from the pushed `LICENSE` file. Both manifests carry the MIT field.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Added the `LICENSE` file (MIT, 2026, Yun Jiang).
+2. Set `license = "MIT"` in `rust/Cargo.toml`.
+3. Fixed the `pyproject.toml` Homepage owner and added Repository and Issues URLs.
+4. README gained CI and license badges, the real clone URL, the required `pixi run core` step, the current test count, and a LICENSE link.
+
+#### before
+
+`pyproject.toml` declared MIT but no `LICENSE` file existed. GitHub showed no license for the repo. The Homepage URL pointed at `jiangyunacw/pairloom`, which does not exist.
+
+#### after
+
+The repo reports the MIT license. All URLs point at the real owner `jiangyun-fun/pairloom`. The README install block is copy-paste correct.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `gh api repos/jiangyun-fun/pairloom --jq .license` returned `{"key":"mit","name":"MIT License",...}` after the push.
+- Commit `5853abd` (license and metadata) and `dbaa9e2` (README).
+
+:::
+
+### Dependabot updates three ecosystems weekly
+
+```
+level: high
+```
+
+#### reason
+
+Dependabot ran its update jobs and opened its first pull request within two minutes of the config landing.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `pip` at the repo root, `cargo` at `/rust`, and `github-actions` ecosystems.
+2. Weekly schedule, one grouped pull request per ecosystem.
+
+#### before
+
+No dependency automation. Stale majors would surface only as manual work.
+
+#### after
+
+Dependency and action updates arrive as grouped pull requests that run the `ci` check before merge.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Run list after the push: `cargo in /rust - Update ...`, `pip in /. - Update ...`, `github_actions in /. - Update ...` all `completed success`.
+- First PR: `chore(deps): bump pyo3 from 0.23.5 to 0.30.1 in /rust in the deps group`, opened 2026-10-26T14:27:08Z.
+
+:::
+
+## fix
+
+### pyproject Homepage pointed at a nonexistent owner
+
+```
+level: high
+```
+
+#### reason
+
+The API query for the old owner returned a repository-not-found error before the fix. The new URL resolves to the live repo.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The URL read `https://github.com/jiangyunacw/pairloom`.
+2. It now reads `https://github.com/jiangyun-fun/pairloom`, plus Repository and Issues entries.
+
+#### before
+
+PyPI pages, README links, and metadata crawlers would hit a 404 for the project home.
+
+#### after
+
+All manifest URLs resolve to the real repository.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Before: `gh repo view jiangyunacw/pairloom` → `Could not resolve to a Repository with the name 'jiangyunacw/pairloom'`.
+- After: `gh repo view jiangyun-fun/pairloom` returns the repo with `homepage` set to itself.
+
+:::
+
+## limitation
+
+### Branch protection is unavailable while the repo is private
+
+```
+level: high
+```
+
+#### reason
+
+The protection API rejected both PUT and GET with an explicit plan-limit message. This is a GitHub plan restriction, not a transient error.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Free private repositories cannot use branch protection.
+2. The restriction lifts when the repository becomes public or the plan upgrades.
+3. The prepared payload requires check context `ci`, keeps `enforce_admins` false, enforces linear history, and forbids force pushes and deletions.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `gh api -X PUT repos/jiangyun-fun/pairloom/branches/main/protection` → 403: `Upgrade to GitHub Pro or make this repository public to enable this feature.`
+
+:::
+
+### No release workflow: the wheel omits the required Rust core
+
+```
+level: high
+```
+
+#### reason
+
+The build task packages Python sources only. A released wheel would install and then fail at import of `pairloom_core`.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `pixi run build` runs `pip wheel` over the hatchling config, which packages `src/pairloom`.
+2. The Rust core builds separately via `pixi run core` and is not a wheel content.
+3. Release automation is deferred until the core ships inside the wheel or the project publishes to PyPI.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `pyproject.toml` wheel target: `packages = ["src/pairloom"]`.
+- `rust/install_core.py:22-28` copies the built `.so` into the environment, not into a package tree.
+
+:::
+
+## caveat
+
+### Internal pixi channels break fresh solves for outsiders
+
+```
+level: low
+```
+
+#### reason
+
+The channels are verifiably in `pixi.toml`. The failure of a fresh solve on an unauthenticated machine is an inference and was not tested.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `pixi.toml` lists `file:///bioproj/tools/share/conda-jy-essentials` and `s3://conda/sibio`.
+2. Installing from the committed lock works everywhere because zero packages come from those channels.
+3. Any fresh solve, such as `pixi add`, fetches channel metadata. An outsider without the s3 credentials would fail there.
+
+#### evidence
+
+```
+level: medium
+type: [statistic, text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `pixi.lock` scan: `'"url": "file'` → 0 matches. `'"url": "s3'` → 0 matches. `conda.anaconda.org` → 232 matches.
+- CI installed from the lock on a hosted runner with no internal access: run 40339586894 success.
+
+:::
+
+### Git history retains internal paths and sample identifiers
+
+```
+level: high
+```
+
+#### reason
+
+The references were found by grep across tracked files. History rewriting is out of scope for this task, so the disclosure persists in past commits.
+
+#### description
+
+```
+type: [statistic, text]
+```
+
+1. Five tracked files reference `/bioproj` paths: `pixi.toml`, `pixi.lock`, two `docs/plans` files, and the requirements audit.
+2. Two of those also carry instrument and run identifiers such as `A00202:2248:...` and `GS4381`.
+3. No secrets, credential-named files, internal IPs, or hostnames were found anywhere in the full history.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+- `git grep -l '/bioproj'` → 5 files. `git grep -lE 'A00202:|A00133:|GS4381'` → 2 files.
+- Full-history pattern scan for `ghp_`, `github_pat_`, `AKIA`, `xox`, `sk-`, `PRIVATE KEY`, api-key shapes → no matches. Credential-named file scan → no matches.
+
+:::
+
+## assumption
+
+None
+
+## conclusion
+
+### The repo builds and tests from the committed lock on a clean runner
+
+```
+level: high
+```
+
+#### reason
+
+The first CI run on a hosted runner installed the environment, built the Rust core, and passed the full suite without any internal resource.
+
+#### description
+
+```
+type: [statistic]
+```
+
+1. Run 40339586894 on commit `9232d5a`: conclusion `success`.
+2. All 242 tests passed on the runner.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Step conclusions from `gh run view 40339586894`: `Build the Rust core` success, `Lint` success, `Format check` success, `Tests` success.
+
+:::
+
+### The repo is ready to become public; no blockers found
+
+```
+level: high
+```
+
+#### reason
+
+Every readiness gate passed or was repaired this session. The remaining items are disclosure judgment calls, not defects.
+
+#### description
+
+```
+type: [text]
+```
+
+1. License present and detected. Metadata consistent. CI green. Dependabot active.
+2. Secrets scan of the full history is clean.
+3. Open items for the owner: accept the internal-path and sample-ID disclosure, decide on the internal pixi channels, and enable branch protection plus secret scanning right after the flip.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- License API response `{"key":"mit",...}`. Settings echo `{"squash":true,"merge":false,"rebase":false,"del":true,"wiki":false,"projects":false}`.
+- Visibility still `private` at audit time.
+
+:::
+
+## recommendation
+
+### M: use ZM to filter QC populations per family
+
+```
+level: medium
+```
+
+#### reason
+
+The tags are emitted by design and cover every template. The filtering examples were verified against real outputs in earlier sessions.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `samtools view -e 'ZM=="chimeric_read"'` isolates concatemers.
+2. `ZN == 1` isolates merged dimers.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### M: on shared-scaffold panels, prefer placement-gated merging
+
+```
+level: medium
+```
+
+#### reason
+
+The GS4381 benchmark measured fastp at 99.4 percent panel-imperfect merges on this panel class, against 8 percent for PairLoom.
+
+#### description
+
+```
+type: [text]
+```
+
+1. fastp's 20 percent difference limit admits spurious long overlaps.
+2. Placement-gated merging rejects them. It reconstructed exact 238 bp fragments in 92 percent of merges.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward. Full-sample benchmark report: `20261026.bench_pairloom_vs_fastp.GS4381-PF2-5_S34_L002/report/full_summary.html`.
+
+:::
+
+### M: choose between fastp and PairLoom by required semantics
+
+```
+level: medium
+```
+
+#### reason
+
+The two tools optimize different goals on the same input. Merge rate is not the discriminator.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Sequence recovery favors fastp.
+2. Placement honesty favors PairLoom.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### M: for low-MAPQ-heavy cohorts on large references, sample the rescue cost first
+
+```
+level: medium
+```
+
+#### reason
+
+Joint rescue costs one linear reference scan per rescued mate block. Genome scale multiplies that cost.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Measure on a sample before a full cohort.
+2. `--no-rescue` opts out.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### M: before going public, review the internal paths and sample IDs in tracked files
+
+```
+level: medium
+```
+
+#### reason
+
+Five tracked files carry `/bioproj` paths and two carry instrument and run identifiers. History retains them even if the working tree is cleaned.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Review the five files listed in the caveat.
+2. Accept the disclosure knowingly, or rewrite history before the flip.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`git grep -l '/bioproj'` → 5 files. `git grep -lE 'A00202:|A00133:|GS4381'` → 2 files.
+
+:::
+
+### M: consider dropping the internal pixi channels before going public
+
+```
+level: medium
+```
+
+#### reason
+
+All locked packages come from public channels. The internal entries serve local installs only, but they break fresh solves for outsiders.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Remove `file:///bioproj/...` and `s3://conda/sibio` from `pixi.toml` if public solves matter.
+2. Keep them if local mirror speed outweighs that, and document why.
+
+#### evidence
+
+```
+level: medium
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`pixi.lock` package URL scan: 0 internal, 232 public.
+
+:::
+
+### L: before relying on --force-mapq60-exact, quantify reference repeat content
+
+```
+level: low
+```
+
+#### reason
+
+MAPQ 60 claims depend on reference uniqueness. The check has not been built yet.
+
+#### description
+
+```
+type: [text]
+```
+
+Quantify the repeat content of the target reference first.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+## next
+
+### M: slide gapped alignments in candidate discovery
+
+```
+level: medium
+```
+
+#### reason
+
+`rescue_unsupported_alignment` is the top refusal reason at full scale, 54,526 templates on the GS4381 run.
+
+#### description
+
+```
+type: [text]
+```
+
+Extend candidate discovery to indel-bearing alignments via bounded local realignment.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+Reason counts sum to `both_aligned=180,043` in `results/summary_full.json` of the GS4381 analysis repo.
+
+:::
+
+### M: batch the joint-rescue reference search with a multi-pattern index
+
+```
+level: medium
+```
+
+#### reason
+
+Rescue cost scales with one linear scan per rescued block. The batched index removes that factor per work chunk.
+
+#### description
+
+```
+type: [text]
+```
+
+Build an Aho-Corasick style multi-pattern index per work chunk for the joint rescue search.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### M: diagnose the PF2 shared-scaffold motif
+
+```
+level: medium
+```
+
+#### reason
+
+The motif explains fastp's spurious overlaps on the verified example pair. The panel-wide mechanism is not established.
+
+#### description
+
+```
+type: [text]
+```
+
+Diagnose the shared-scaffold motif that invites fastp's spurious long overlaps.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Example pair `A00133:1576:H5JFHDSXG:2:1101:10086:13135`, motif `...CCTATATAAGCAGAGCTCG...`, in the GS4381 report.
+
+:::
+
+### M: enable branch protection and secret scanning right after the public flip
+
+```
+level: medium
+```
+
+#### reason
+
+Both features are blocked on the private free plan. They unlock the moment the repository becomes public.
+
+#### description
+
+```
+type: [text]
+```
+
+1. PUT the recorded protection payload to `branches/main/protection` with context `ci`.
+2. Enable secret scanning and push protection via the security-and-analysis endpoint.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+403 message: `Upgrade to GitHub Pro or make this repository public to enable this feature.`
+
+:::
+
+### M: triage the Dependabot pyo3 0.23 to 0.30 pull request
+
+```
+level: medium
+```
+
+#### reason
+
+The PR's CI run passed, so the upgrade compiles and tests green. The merge decision is an appetite call, not a correctness one.
+
+#### description
+
+```
+type: [text]
+```
+
+Merge or close `chore(deps): bump pyo3 from 0.23.5 to 0.30.1 in /rust in the deps group`.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Run list line: `ci | dependabot/cargo/rust/deps-bbf3797cf9 | completed success`.
+
+:::
+
+### L: build a calibrated joint-MAPQ model
+
+```
+level: low
+```
+
+#### reason
+
+Rescued pairs and the new non-primary class both emit flat MAPQ 0. A calibrated model replaces the flat value.
+
+#### description
+
+```
+type: [text]
+```
+
+Model joint MAPQ for rescued pairs and merged non-primary evidence.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### L: promote the synthetic known-fragment benchmark into the repo suite
+
+```
+level: low
+```
+
+#### reason
+
+The benchmark exists and measures recovery against designed fragments. Housing it under `benchmarks/` makes it reproducible for contributors.
+
+#### description
+
+```
+type: [text]
+```
+
+Move the synthetic benchmark into `benchmarks/` in the repo suite.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### L: re-run the GO00009 full benchmark on the deduplicated panel
+
+```
+level: low
+```
+
+#### reason
+
+The pilot re-run is done. The full-scale numbers are wanted only if the earlier sample's full analysis still matters.
+
+#### description
+
+```
+type: [text]
+```
+
+Re-run only if the full-scale numbers are still wanted.
+
+#### evidence
+
+```
+level: low
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### L: add a release workflow once the Rust core ships in the wheel
+
+```
+level: low
+```
+
+#### reason
+
+A release workflow that attaches today's wheel would ship a broken artifact: the wheel cannot run without the separately built core.
+
+#### description
+
+```
+type: [text]
+```
+
+Add tag-triggered release automation after the core ships inside the wheel or the project publishes to PyPI.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`pyproject.toml` wheel target packages `src/pairloom` only. `rust/install_core.py` installs the `.so` into the environment.
+
+:::
+
+## observation
+
+### Dependabot opened its first pull request within two minutes
+
+```
+level: high
+```
+
+#### reason
+
+The config push and the PR timestamp are both recorded by GitHub.
+
+#### description
+
+```
+type: [statistic, text]
+```
+
+1. Config landed at 14:25:54Z. The pyo3 PR opened at 14:27:08Z.
+2. The PR bumps pyo3 from 0.23.5 to 0.30.1, and its `ci` run passed.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Run list: `ci | dependabot/cargo/rust/deps-bbf3797cf9 | completed success | chore(deps): bump pyo3 from 0.23.5 to 0.30.1 in /rust in the deps group`.
+
+:::
+
+## process
+
+### typo'd settings field was silently ignored
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The first settings PATCH sent `allow_rebege_merge` (typo) instead of `allow_rebase_merge`.
+2. The REST API ignores unknown fields, so the call succeeded and left rebase merges enabled.
+3. The response check caught it. A corrective PATCH completed the settings. The better action is to validate the response of every mutation immediately, which the skill prescribes.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+First PATCH response: `"allow_rebase_merge": true, "delete_branch_on_merge": false`. Corrective PATCH echo: `{"rebase":false,"del":true}`.
+
+:::
+
+### action majors were resolved from the registry at write time
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. Queried `releases/latest` for every action before writing the workflow.
+2. Verified the major tags `v0` and `v7` exist for setup-pixi and checkout.
+3. The workflow passed on its first run, which supports the choice.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`actions/checkout` → `v7.0.1`, `prefix-dev/setup-pixi` → `v0.11.2`, `dtolnay/rust-toolchain` → `v1`, `Swatinem/rust-cache` → `v2.9.3`.
+
+:::
+
+### orphaned audit section was repaired before appending
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The requirements audit ended with an entry body that had lost its H2 heading.
+2. The heading loss dated from the GS4381 entry insertion.
+3. The repair restored the heading before the new entry was appended, and the validator hook confirmed the file structure.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`grep -n '^## '` listed no heading above the trailing `level: low` fence at the file end. The repaired file passes `validate-requirements-audit.py`.
+
+:::
+
+## change
+
+### repo, workflow, and docs mutations for the GitHub setup
+
+```
+level: high
+```
+
+#### reason
+
+All rows were executed and verified this session. These are facts, not estimates.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Verb | Path or target |
+| --- | --- |
+| Created | `LICENSE` |
+| Created | `.github/workflows/ci.yml` |
+| Created | `.github/dependabot.yml` |
+| Created | `docs/plans/20261026-222311_setup-github-repo.plan.qmd` |
+| Created | `docs/plans/20261026-222854_setup-github-repo.report.qmd` |
+| Updated | `README.md`, `pyproject.toml`, `rust/Cargo.toml` |
+| Updated | `docs/misc/requirements_audit.qmd` (heading repair plus this entry) |
+| Updated | `docs/misc/next_and_recommendation.qmd` |
+| Git | `5853abd`, `dbaa9e2`, `6f242da`, `9232d5a` pushed to `origin/main` |
+| GitHub | Settings PATCH, description, homepage, 9 topics; protection blocked by plan |
+
+No packages were installed and no environments were created.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline -4` shows the four commits. `git push` output: `f4e8402..9232d5a main -> main`.
+
+:::
+
+## other
+
+None

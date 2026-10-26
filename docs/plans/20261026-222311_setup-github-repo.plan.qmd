@@ -1,0 +1,93 @@
+---
+title: "Plan: set up the remote GitHub repo and audit public readiness"
+author: "Yun Jiang"
+date: 2026-10-26
+---
+
+# Objective
+
+The remote `jiangyun-fun/pairloom` already existed (private, in sync with
+local `main`). Apply the production defaults — license, CI, Dependabot,
+repo settings, branch protection, topics — and audit whether the repo is
+ready to become public. The repo stays private; flipping visibility is
+the owner's decision after the audit.
+
+# Recon findings (before change)
+
+1. Remote existed, private, default branch `main`, no license, no CI;
+   local `main` fully pushed.
+2. No secrets and no credential-named files in the full git history; no
+   internal IPs or hostnames in tracked files.
+3. Internal pixi channels (`file:///bioproj/...`, `s3://conda/sibio`)
+   appear only as channel listing in `pixi.lock`; every package URL is
+   public `conda.anaconda.org`.
+4. `pyproject.toml` Homepage pointed at the nonexistent
+   `jiangyunacw/pairloom`; the real owner is `jiangyun-fun`.
+5. `rust/Cargo.toml` had no `license` field; no LICENSE file existed.
+6. Internal references (`/bioproj` paths) sit in 2 docs files plus
+   `pixi.toml`/`pixi.lock`; instrument/run IDs appear in 2 docs files.
+   History retains them.
+7. An untracked `examples/` directory appeared mid-task (concurrent
+   user work); it was left out of every commit.
+
+# Steps (as executed)
+
+1. Added `LICENSE` (MIT, 2026, Yun Jiang); set `rust/Cargo.toml`
+   `license = "MIT"`; fixed the `pyproject.toml` Homepage URL and added
+   Repository/Issues. Commit `5853abd`.
+2. README: CI + license badges, real clone URL plus the required
+   `pixi run core` step, stale test count fixed (182 → 242), LICENSE
+   link. Commit `dbaa9e2`.
+3. Added `.github/workflows/ci.yml` — one job named `ci` on `main`
+   pushes and PRs: checkout@v7, setup-pixi@v0 (cache), rust-toolchain,
+   rust-cache (`workspaces: rust`), then `pixi run core / lint / format
+   / test`. Majors resolved from the registry this session. Commit
+   `6f242da`.
+4. Added `.github/dependabot.yml` — `pip` (root), `cargo` (`/rust`),
+   `github-actions`; weekly, grouped. Commit `9232d5a`.
+5. Pushed `f4e8402..9232d5a` to `origin/main`.
+6. GitHub settings: the first PATCH carried a typo'd field
+   (`allow_rebege_merge`) that the REST API silently ignored, leaving
+   rebase merges on; a corrective PATCH completed the set
+   (squash-only, delete-branch-on-merge, wiki/projects off).
+   Description, homepage, and 9 topics set via `gh repo edit`.
+7. Branch protection: **blocked** — the API returned 403 "Upgrade to
+   GitHub Pro or make this repository public to enable this feature."
+   The exact PUT payload is recorded in the report; it must run right
+   after the repo goes public.
+8. Watched the CI run: **green on the first run** (run 40339586894 on
+   `9232d5a`) — pixi installed from the committed lock without touching
+   the internal channels, the Rust core built, lint/format passed, all
+   242 tests passed on the clean runner.
+9. Release workflow: deferred. `pixi run build` packages Python only —
+   the wheel omits the required Rust core, so release artifacts would
+   be broken. Recorded as a next item.
+
+# Files touched
+
+- `LICENSE` (new), `pyproject.toml`, `rust/Cargo.toml`, `README.md`
+- `.github/workflows/ci.yml` (new), `.github/dependabot.yml` (new)
+- `docs/plans/20261026-222311_setup-github-repo.{plan,report}.qmd`
+- `docs/misc/requirements_audit.qmd`,
+  `docs/misc/next_and_recommendation.qmd`
+
+# Risks and outcomes
+
+1. Internal channels breaking CI install-from-lock: did not happen
+   (all package URLs public; run green).
+2. Rust toolchain missing on CI: handled by the rust-toolchain action
+   before `pixi run core`.
+3. Branch protection on a private free-plan repo: blocked by plan
+   (403); deferred to the public flip, payload recorded.
+
+# Verification
+
+1. CI run 40339586894: conclusion `success`, all steps `success`.
+2. Repo settings verified via API echo: squash only, rebase/merge off,
+   delete-on-merge on, wiki/projects off; license detected as MIT;
+   description/homepage/topics present.
+3. Protection: verified unavailable (403 on GET too) — matches the
+   free-private-plan limitation.
+4. Public-readiness verdict: no blockers; flagged items are internal
+   paths/sample IDs in tracked files (history retains them) and the
+   internal pixi channels for fresh solves.

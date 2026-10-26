@@ -1444,6 +1444,8 @@ Files (pairloom repo): Updated docs/misc/requirements_audit.qmd (this entry), do
 
 Environments: new pixi workspace at the new analysis repo. Git: 8a1e3ca, 4ca9b89 in the new repo; docs commit in pairloom; none pushed.
 
+## Explain how supplementary and secondary records are processed today
+
 ```
 level: low
 date: 2026-10-26
@@ -1451,7 +1453,7 @@ date: 2026-10-26
 
 ### description
 
-The user asked how supplementary and secondary records are processed currently, following the merge-non-primary design discussion.
+The user asked how supplementary and secondary records are processed currently, following the merge-non-primary design discussion. (Heading repaired 2026-10-26: this entry's H2 was lost when the GS4381 entry was inserted above it.)
 
 ### result
 
@@ -1462,3 +1464,50 @@ The user asked how supplementary and secondary records are processed currently, 
 ### change
 
 None (question turn; this entry only).
+
+## Set up the remote GitHub repo and audit public readiness
+
+```
+level: high
+date: 2026-10-26
+```
+
+### description
+
+The user asked to set up the remote GitHub repo (which existed, private, unconfigured) and check whether it is ready to become public; visibility stays private until the owner decides.
+
+### result
+
+1. Implemented: MIT LICENSE plus manifest license fields, fixed the pyproject Homepage owner (jiangyunacw → jiangyun-fun), README badges, real clone URL, current test count.
+2. Implemented: ci workflow (one ci job: pixi lock install, Rust core, lint, format, tests) — green on main at first run; Dependabot for pip, cargo (/rust), github-actions.
+3. Verified: full-history secrets scan clean; internal pixi channels pin zero packages; settings, description, homepage, topics applied; license detected as MIT.
+4. Answered: no public blockers; flagged items are internal paths/sample IDs in tracked files (history retains them) and the s3 pixi channel for fresh solves; branch protection is blocked while private.
+
+### change
+
+Files: Created LICENSE, .github/{workflows/ci.yml,dependabot.yml}, docs/plans/20261026-222311_setup-github-repo.plan.qmd and this report; Updated README.md, pyproject.toml, rust/Cargo.toml, this audit file (heading repair) and next_and_recommendation.qmd.
+
+Git: pairloom 5853abd, dbaa9e2, 6f242da, 9232d5a pushed to origin/main; GitHub repo settings PATCHed (squash-only, delete-on-merge, wiki/projects off), description/homepage/topics set; branch protection blocked (403, private free plan).
+
+## Construct a classic BAM covering all failure reasons and success cases
+
+```
+level: medium
+date: 2026-10-26
+```
+
+### description
+
+The user asked for a classic BAM that introduces every type of failure reason and every successful case.
+
+### result
+
+1. Implemented: examples/build_classic_bam.py builds classic.fa (5 contigs: plain, duplicate pair, 11x repeat) and classic.bam (24 templates) deterministically.
+2. Verified: default run merges 5 (ordinary, adjacent, equal-qual N, rescued ZR, non-primary ZN) and refuses with 15 distinct reasons x1; four flag runs surface non_primary_records, mapq_below_min, strict_conflict, insufficient_overlap.
+3. Documented: examples/gallery/OUTCOMES.md maps every template to its outcome; empty_consensus marked not exercised (defensive branch, merge.py:219).
+
+### change
+
+Files (pairloom repo): Created examples/build_classic_bam.py, examples/gallery/{classic.fa,classic.fa.fai,classic.bam,OUTCOMES.md}, this entry.
+
+Git: pairloom commit on main, not pushed (parallel session owns pushes).
