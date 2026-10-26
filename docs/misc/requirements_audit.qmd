@@ -968,3 +968,24 @@ For the benchmark categories where exactly one tool merged a pair, explain why t
 ### change
 
 None (question turn; analysis from existing benchmark artifacts).
+
+## Explain which consensus is correct in the both-different bucket
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+For the 229,428 pairs where both tools merged but emitted different sequences, determine which consensus is correct.
+
+### result
+
+1. Measured (full dataset, SE NM to the panel): PairLoom matches the design exactly in 108,722 (47.4%) vs fastp 14,804 (6.5%); mean NM 0.763 vs 1.364; head-to-head PairLoom strictly closer in 148,921 (65%), fastp closer in 19,440 (8.5%), tie 61,067.
+2. Answered: on the design-proxy criterion PairLoom's consensus is correct far more often, without copying the reference (its policy only picks between mate bases by quality). At genuinely undecidable equal-quality conflicts, correctness is undefined; PairLoom emits N(q2) instead of guessing.
+3. Caveated: the panel is a proxy (synthesis errors confound both arms equally), and 8.5% of pairs still favor fastp — not a blanket win.
+
+### change
+
+None (question turn; full-scale measurement from existing benchmark BAMs).
