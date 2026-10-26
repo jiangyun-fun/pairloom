@@ -1056,3 +1056,24 @@ For the two exported bucket BAMs, provide paired-end style output containing onl
 Files (analysis repo): Created results/exports/{fastp_only.pe.bam,pairloom_only.merged.bam counterpart pairloom_only.pe.bam}; Updated results/exports/README.md.
 
 Git: commit in the analysis repo, not pushed.
+
+## Show the merged results for pair A00202:2248:H5JJNDSXG:3:1101:1271:29872
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked what each tool produced for one specific pair from the fastp-only bucket.
+
+### result
+
+1. Answered: fastp emitted a 161 bp merged read that spans two oligos (F1-942 + F1-1194, a head-to-tail concatemer with a 1 bp junction offset); its SE alignment splits into 80M81S primary on F1-942 plus 80M81H supplementary on F1-1194, both MAPQ 60.
+2. Answered: PairLoom refused the pair (mates on different contigs, ZC:Z:both_aligned, records passed through unchanged) — the different_contig class in one example.
+3. Noted: fastp's sequence is a faithful read of the dimer molecule; PairLoom's refusal reflects its single-fragment placement contract.
+
+### change
+
+None (question turn; evidence pulled from the exported BAMs and run outputs).
