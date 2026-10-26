@@ -947,3 +947,24 @@ Files (pairloom repo):
 Packages: samtools promoted to runtime dependency; Environments: unchanged.
 
 Git: 60ac6d3 (worker writing), 58f370c (fan-in fix), 706f0ca (incremental aggregation + chunk 16384) plus docs commits; not pushed.
+
+## Explain why each tool failed in the fastp-only and PairLoom-only buckets
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+For the benchmark categories where exactly one tool merged a pair, explain why the other tool did not, with full-dataset numbers.
+
+### result
+
+1. Answered: fastp-only (92,817 pairs — PairLoom refused) splits into placement-ambiguity rescue refusals (~41k, both mates MAPQ<20), unmapped mates (~7.5k), and structural refusals at good MAPQ (~45k: cross-contig concatemers, non-primary records, indel/orientation conflicts).
+2. Answered: PairLoom-only (2,813 pairs — fastp refused) are reads whose overlap mismatch counts exceed fastp's diff limits (sampled rejections at 135-150 bp overlaps); PairLoom merges them via quality-gated consensus, 86% re-aligning imperfectly (error-laden).
+3. Noted: the asymmetry is 33:1, and PairLoom's refusals concentrate on pairs whose fastp merge lacks a consistent single-fragment placement.
+
+### change
+
+None (question turn; analysis from existing benchmark artifacts).
