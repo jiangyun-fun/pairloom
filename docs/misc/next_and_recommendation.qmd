@@ -5,8 +5,7 @@ author: "Yun Jiang"
 
 ## next
 
-1. M: complete the quiet and moderate-load full-dataset measurements once the shared machine calms (watcher armed), then refresh the README performance reference.
-2. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
+1. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
 3. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk) so genome-scale runs avoid the per-template linear scan.
 4. M: add a `--merge-stats-parquet` optional output with overlap-length distributions and merge-rejection reason counts.
 5. L: build a calibrated joint-MAPQ model for rescued pairs to replace the flat output MAPQ 0.

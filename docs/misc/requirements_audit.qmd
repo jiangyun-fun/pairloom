@@ -937,7 +937,7 @@ Implement worker-side output writing (workers write per-chunk BAMs; main only co
 1. Implemented: process_template emits records directly to writers (no SAM text on the hot path); workers produce per-chunk BAMs sharing the input header object; main concatenates (bounded 64-way cascading cat) and stamps the @PG output header once per stream via samtools reheader; samtools is now a runtime dependency.
 2. Verified: equivalence PASS on the pilot (1 and 4 threads) and on the full dataset; suite 233 passed; peak RSS bounded (494 MB at 1,553 chunks vs 8.15 GB before the fan-in fix).
 3. Diagnosed: yesterday's 173.6 s vs 227–229 s spread was mostly a cli.py chunk-size default bug (256 overriding the 8192 config default), not machine load; now fixed at both sites.
-4. Measured: full dataset under extreme load (load average 44, box 4x oversubscribed by other sessions): 678 s — starvation, not code. Quiet and moderate-load runs are queued behind a load watcher.
+4. Measured (final binary, chunk 16384): 177.3 s at background load ~8; 236 s at ~2x oversubscription; 678 s at load 44. Equivalence PASS at every tier.
 
 ### change
 
@@ -946,4 +946,4 @@ Files (pairloom repo):
 
 Packages: samtools promoted to runtime dependency; Environments: unchanged.
 
-Git: 60ac6d3 (worker writing), 58f370c (fan-in fix + docs commit to follow); not pushed.
+Git: 60ac6d3 (worker writing), 58f370c (fan-in fix), 706f0ca (incremental aggregation + chunk 16384) plus docs commits; not pushed.

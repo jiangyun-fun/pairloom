@@ -102,7 +102,10 @@ pilot (99,401 templates) — a ~9.7x speedup is required.
 4. chunk_size default changed 256 → 8192 after full-dataset measurement
    (275 s at 256/2048-class overhead vs 173.6 s at 8192); outputs are
    chunk-size invariant (gate green at 256, 2048, and 8192).
-5. The target was met on a quiet machine (173.6 s); under concurrent
-   heavy third-party load the same binary measures ~228 s. The remaining
-   known lever (worker-side output writing, removing the last main-side
-   record serialization) is queued as the top Next item.
+5. The queued worker-side-writing follow-up (executed 2026-10-23/26)
+   removed the last main-side record parsing entirely: workers write
+   per-chunk BAMs (chunk 0 carries the output header; bounded 64-way
+   cascading concat; incremental searchsorted aggregation). Final full
+   measurements: 177.3 s at background load ~8, 236 s at ~2x
+   oversubscription, 678 s at load 44 — equivalence PASS at every tier;
+   chunk default 8192 -> 16384 after measurement (205 s -> 177 s).

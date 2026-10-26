@@ -430,11 +430,16 @@ holds at most one 1 Mbp reference chunk and at most
 the no-rescue path (see `benchmarks/results/RESULTS.md`).
 
 Real-data reference point (GO00009 oligo pool, 6.08M templates, 21,839
-oligos x 80 bp, full-overlap pairs, rescue on, 4 threads): 173.6 s wall,
-430 MiB peak RSS — about 35k templates/s — with outputs record-identical
-to the single-threaded run and to the pre-optimization implementation
+oligos x 80 bp, full-overlap pairs, rescue on, 4 threads): 177 s wall and
+~565 MiB peak RSS at the host's typical background load (~34k
+templates/s) — with outputs record-identical to the single-threaded run
+and to the pre-optimization implementation
 (`benchmarks/equivalence_check.py` compares two output sets record by
-record, table by table, and done line for done line).
+record, table by table, and done line for done line). On a shared host,
+wall time degrades with oversubscription (236 s at ~2x, 678 s at ~4x
+background load) while outputs stay identical; the parallel path keeps
+records off the IPC boundary in both directions, so the main process
+never parses or writes a record.
 
 ## Rust core (`pairloom_core`)
 
