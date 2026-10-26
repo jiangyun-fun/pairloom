@@ -1305,3 +1305,24 @@ The user asked what the `non_primary_records` merge-failure reason means, after 
 ### change
 
 None (question turn; this entry only).
+
+## Explain the rescue_unsupported_alignment failure reason
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked what the `rescue_unsupported_alignment` failure reason means, after seeing it in the dedup-run export.
+
+### result
+
+1. Answered: it is a rescue-path refusal — the pair qualified for joint rescue, but a mate's primary alignment is gapped or inexact, and rescue re-places only exact ungapped blocks (rescue.py:126).
+2. Explained: rescue searches each mate's aligned block as an exact string reference-wide (README:122-124); a gapped block would misrepresent the read, so the search is declined before it runs.
+3. Illustrated: pilot pair ...:1111:3794:8844 — both mates MAPQ 19, CIGAR 17M1D24M3D9M1D5M1D19M, NM 8; 96 such pairs in the dedup pilot.
+
+### change
+
+None (question turn; this entry only).
