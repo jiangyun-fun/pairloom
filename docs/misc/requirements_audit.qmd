@@ -1165,3 +1165,28 @@ Files (pairloom repo):
 - Updated: src/pairloom/{config,cli,pipeline,parquetout}.py, benchmarks/equivalence_check.py, README.md, AGENTS.md, docs/misc/next_and_recommendation.qmd
 
 Git: e286e94 (plan), 5036e22 (feat), plus docs commits; not pushed.
+
+## Re-run the pilot with the new classification
+
+```
+level: medium
+date: 2026-10-26
+```
+
+### description
+
+Re-run the pilot dataset with the per-read failure classification and report the results.
+
+### result
+
+1. Executed: pilot re-run (5.5 s, 165 MB); artifacts committed to the analysis repo under results/classified_pilot/ (BAMs, both parquets, merge-stats).
+2. Reported: 453 former different_contig -> 242 plain + 211 chimeric_read; ZM per-record distribution matches the done-line reasons exactly (2 records per failed template); overlap histogram peaks at 80 bp (89,175 pairs) summing to 97,748.
+3. Verified: equivalence PASS against the pre-classification baseline modulo the two intended deltas.
+
+### change
+
+Files (analysis repo): Created results/classified_pilot/* (BAMs, parquets, README).
+
+Files (pairloom repo): this audit entry.
+
+Git: 13d6534 in the analysis repo plus this docs commit; neither pushed.
