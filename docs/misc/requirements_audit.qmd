@@ -1347,3 +1347,24 @@ The user asked how fastp merged one specific fastp-only pair from the dedup-run 
 ### change
 
 None (question turn; this entry only).
+
+## Should non_primary_records templates be merged (delete the reason)?
+
+```
+level: medium
+date: 2026-10-26
+```
+
+### description
+
+The user proposed that pairs refused only for non_primary_records should instead be merged, i.e. delete that reason, and asked whether I agree.
+
+### result
+
+1. Measured: all 231 dedup-pilot non_primary_records templates have concordant primaries — same contig, FR, MAPQ >= 20 — the gate is the only refusal; removing it sends all 231 to merge evaluation.
+2. Noted: cross-contig dimer pairs never hit this reason (the contig check runs first), so removing the gate reclassifies nothing in this dataset.
+3. Answered: agree on substance; propose an opt-in mode rather than outright deletion, with three decided outputs — routing, SA tags, merged MAPQ 0 for split evidence.
+
+### change
+
+None (question turn; this entry only).
