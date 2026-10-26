@@ -2,6 +2,7 @@
 name = "pairloom-core"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Batched Rust core for PairLoom's per-base hot paths"
 
 [lib]

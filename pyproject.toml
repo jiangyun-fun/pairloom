@@ -30,7 +30,9 @@ dependencies = [
 pairloom = "pairloom.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jiangyunacw/pairloom"
+Homepage = "https://github.com/jiangyun-fun/pairloom"
+Repository = "https://github.com/jiangyun-fun/pairloom"
+Issues = "https://github.com/jiangyun-fun/pairloom/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pairloom"]
