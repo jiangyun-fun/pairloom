@@ -1261,3 +1261,26 @@ Files (analysis repo): Created scripts/{10_dedup_ref.py,11_run_pilot_dedup.sh}, 
 Files (pairloom repo): Updated docs/misc/requirements_audit.qmd (this entry) and docs/misc/next_and_recommendation.qmd.
 
 Environments: none new. Git: analysis-repo commit plus this docs commit in pairloom; neither pushed.
+
+## Export the dedup run's non-chimeric fastp-only pairs with reasons as a BAM
+
+```
+level: low
+date: 2026-10-26
+cross-repo: pairloom, 20261022.bench_pairloom_vs_fastp.GO00009_S19
+```
+
+### description
+
+The user asked again for the primary records fastp merged but PairLoom did not, excluding chimeric_read, as a BAM carrying the failure reason — this time from the deduplicated-panel pilot run.
+
+### result
+
+1. Implemented: scripts/12_export_fastp_only_nonchimeric_dedup.py; results/exports/fastp_only_nonchimeric.dedup.pe.bam (633 pairs, 1,266 records, queryname-sorted) plus the qname list.
+2. Verified: every record carries ZC and ZM; reason counts sum to 633; quickcheck passed; 633 + 210 chimeric + 102 no-reason = 945 fastp-only pairs.
+
+### change
+
+Files (analysis repo): Created scripts/12_export_fastp_only_nonchimeric_dedup.py, results/exports/{fastp_only_nonchimeric.dedup.pe.bam,fastp_only_nonchimeric.dedup.names}; Updated results/exports/README.md, docs/misc/requirements_audit.qmd (mirror).
+
+Files (pairloom repo): this audit entry. Git: commits in both repos; neither pushed.
