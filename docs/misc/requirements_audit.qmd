@@ -989,3 +989,26 @@ For the 229,428 pairs where both tools merged but emitted different sequences, d
 ### change
 
 None (question turn; full-scale measurement from existing benchmark BAMs).
+
+## Export the fastp-only and PairLoom-only buckets as BAMs
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+Export the full-dataset one-tool-only benchmark buckets as separate, usable BAM files.
+
+### result
+
+1. Implemented: results/exports/fastp_only.se.bam (92,817 fastp-merged reads, SE-aligned to the panel with competing secondaries kept; 133,483 records) and results/exports/pairloom_only.merged.bam (2,813 PairLoom consensus records verbatim, tags intact).
+2. Verified: both coordinate-sorted, indexed, samtools quickcheck-passed; primary counts match the per_pair_full.parquet bucket sizes exactly.
+3. Recorded: qname lists beside the BAMs; .gitignore exception added; committed in the analysis repo.
+
+### change
+
+Files (analysis repo): Created results/exports/{fastp_only.se.bam,fastp_only.se.bam.bai,pairloom_only.merged.bam,pairloom_only.merged.bam.bai,fastp_only.names,pairloom_only.names,README.md}; Updated .gitignore.
+
+Git: 07f77a6 in the analysis repo, not pushed.
