@@ -61,10 +61,16 @@ Existing output files are refused unless `--force` is given.
 
 - **Primary alignments** drive adjustment, classification, and merging.
 - **Secondary (0x100) and supplementary (0x800) records** pass through to
-  the outputs unchanged and untagged. A template carrying any non-primary
-  record is never merged (reason `non_primary_records`): merging replaces
-  the template's primary records, so this policy discards nothing and
-  duplicates nothing.
+  the outputs unchanged and untagged — unless their template merges. By
+  default a template whose primaries are concordant merges even when it
+  carries non-primary records: the consensus then carries the evidence
+  tag (`--evidence-tag`, default `ZN:i:1`) at output MAPQ 0, and the
+  template's non-primary records are dropped — their evidence survives in
+  the consensus record's preserved outer soft clips. A template that
+  still fails the ordinary merge gates keeps every record and reports the
+  failing reason. `--no-merge-non-primary` restores the refusal: a
+  template carrying any non-primary record is never merged (reason
+  `non_primary_records`), so nothing is discarded and nothing duplicated.
 - **Unmapped records** pass through and are tagged with their template's
   classification.
 - **Templates with only non-primary records** (possible in filtered BAMs)
@@ -162,7 +168,10 @@ Policy details:
   is independent of output MAPQ, and exact sequence match alone never
   earns MAPQ 60. For ordinary (unrescued) pairs, `--min-mapq` still tests
   the original aligner MAPQ exactly as before; rescue bypasses that one
-  gate only for templates whose joint placement it just verified.
+  gate only for templates whose joint placement it just verified. The
+  same honesty policy applies to templates merged despite
+  secondary/supplementary evidence: their consensus carries output MAPQ 0
+  (marked by the evidence tag), never the adjusted mate MAPQs.
 - **Statistics**: rescued pairs contribute no disagreement observations.
   Statistical eligibility keeps testing the original aligner MAPQ (an
   eligible rescue always has a sub-threshold mate), so the disagreement
@@ -379,6 +388,13 @@ tag `ZR` is PairLoom's own joint-rescue marker and is reserved: choosing
 it as `--status-tag` is rejected at validation, before any input is
 read.
 
+`--reason-tag` (default `ZM`) writes the failing reason on the primaries
+of unmerged failed templates. `--evidence-tag` (default `ZN`) marks
+consensus records whose template carried secondary/supplementary
+evidence: `ZN:i:1`, output MAPQ 0, non-primary records dropped. All
+three tags must differ from each other and from the reserved `ZR`. The
+done line reports `merged_non_primary=<n>` — the count of such merges.
+
 ## Output integrity and failure policy
 
 - **Fail loudly**: no `except: pass`, no logged-and-ignored errors, no
@@ -487,7 +503,9 @@ checker.
 5. `--max-fragment-length` defaults to 1000; `--min-overlap` to 0 (zero
    allows adjacent joining); `--min-base-quality`/`--min-mapq` to 20;
    window 500; candidates 10; chunk 16384; batch 65536; aggregation spill
-   threshold 10^6 positions; joint rescue is enabled unless `--no-rescue`.
+   threshold 10^6 positions; joint rescue is enabled unless `--no-rescue`;
+   templates carrying secondary/supplementary records merge by default
+   (`--no-merge-non-primary` refuses them with `non_primary_records`).
 6. Non-paired primary records classify as `left_aligned_only`.
 
 ## Known limitations

@@ -1390,6 +1390,33 @@ The user asked whether merge-non-primary should be the default — i.e. no non_p
 
 Files (pairloom repo): Created docs/plans/20261026-162249_merge-non-primary.plan.qmd; Updated docs/misc/next_and_recommendation.qmd, this entry.
 
+## Implement merge-non-primary by default (plan 20261026-162249)
+
+```
+level: high
+date: 2026-10-26
+cross-repo: pairloom, 20261022.bench_pairloom_vs_fastp.GO00009_S19
+```
+
+### description
+
+The user said "go ahead" on the settled design: default-on merging of templates carrying non-primary records, with drop, the ZN evidence tag, MAPQ 0, rescue consistency, and a done-line counter.
+
+### result
+
+1. Implemented: concordant primaries merge despite non-primary records; consensus carries ZN:i:1 at MAPQ 0, non-primary records dropped; --no-merge-non-primary restores the old gate.
+2. Implemented: rescue no longer shape-blocks these templates; done line and RunSummary gain merged_non_primary; config/cli gain merge_non_primary and evidence_tag (validated against ZC/ZR/ZM).
+3. Verified: suite 242 passed, ruff clean; pilot — 98,326 old merges record-identical, 230 of 231 merged (all ZN/MAPQ 0), 1 re-reasoned; opt-out byte-identical to the prior default.
+4. Documented: README record policy/MAPQ/tagging/§15; AGENTS test count; plan rewritten as executed; report rendered (20261026-164400).
+
+### change
+
+Files (pairloom repo): Created tests/test_merge_non_primary.py, docs/plans/{20261026-162249 plan, 20261026-164400 report}; Updated src/pairloom/{config,cli,pipeline}.py, tests/{test_classify_policy,test_rescue}.py, README.md, AGENTS.md, docs/misc/next_and_recommendation.qmd, this entry.
+
+Files (analysis repo): Created scripts/13_run_pilot_nonprimary.sh, results/{summary_dedup_np.json,per_pair_dedup_np.parquet}, results/logs_dedup_np/ (data/pilot_dedup_np gitignored).
+
+Environments: none new. Git: pairloom d99a377 (feat) plus docs commits; analysis f6a8927; none pushed.
+
 ```
 level: low
 date: 2026-10-26

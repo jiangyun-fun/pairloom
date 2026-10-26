@@ -70,3 +70,25 @@ primaries — the gate was their only refusal.
   templates — documented as policy, surfaced by ZN.
 - Existing docs/tests assume the old contract; all sites must be found
   (grep `non_primary`) or the suite will catch them.
+
+# Verification (as executed)
+
+1. Suite 242 passed (4 new tests incl. a companion rescue+ZN test);
+   ruff lint/format clean.
+2. Pilot (dedup panel, `scripts/13_run_pilot_nonprimary.sh` in the
+   benchmark repo): all 98,326 previously-merged records SAM-identical;
+   230 of 231 former refusals merged (all ZN at MAPQ 0), 1 re-reasoned
+   `insertion_conflict`; 1 cross-contig template re-reasoned
+   `different_contig` -> `rescue_no_compatible_pair` (records identical
+   modulo ZM); disagreement parquet identical; fastp_only 945 -> 715.
+3. Opt-out run byte-identical to the prior default (merged 98,326 and
+   unmerged 3,487 records, both parquets; done line equal modulo the new
+   `merged_non_primary=0` field).
+
+# Deviations from the plan (as executed)
+
+1. A companion test (`test_cross_contig_secondary_rescues_under_default`)
+   was added beyond the planned three paths, covering the rescue+ZN path.
+2. Two existing tests asserting the old default were converted to the
+   opt-out path rather than rewritten, preserving their original intent
+   (record policy pass-through; review-6.2 rescue exclusion).

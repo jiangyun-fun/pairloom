@@ -5,17 +5,16 @@ author: "Yun Jiang"
 
 ## next
 
-1. H: implement merge-non-primary per plan 20261026-162249 (default on, drop, ZN tag, MAPQ 0, done-line counter); verify with tests + pilot re-run.
-2. M: re-run the FULL benchmark with the deduplicated panel (and the new mode once shipped) to confirm pilot-level shifts at 6.1M-pair scale.
-3. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
-4. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk).
-5. L: build a calibrated joint-MAPQ model for rescued pairs to replace the flat output MAPQ 0.
-6. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke, `pixi run core` build) with Dependabot.
-7. L: promote the synthetic known-fragment benchmark into the repo suite under `benchmarks/`.
+1. M: re-run the FULL benchmark with the deduplicated panel and the merge-non-primary default to confirm pilot-level shifts at 6.1M-pair scale.
+2. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
+3. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk).
+4. L: build a calibrated joint-MAPQ model for rescued pairs (and the new MAPQ-0 non-primary class) to replace flat output MAPQ 0.
+5. L: add a GitHub Actions workflow (pixi-based test matrix, ruff, benchmark smoke, `pixi run core` build) with Dependabot.
+6. L: promote the synthetic known-fragment benchmark into the repo suite under `benchmarks/`.
 
 ## recommendation
 
-1. M: use ZM to filter QC populations per family — e.g. `samtools view -e 'ZM=="chimeric_read"'` isolates concatemers.
+1. M: use ZM to filter QC populations per family — e.g. `samtools view -e 'ZM=="chimeric_read"'` isolates concatemers; `ZN == 1` isolates merged dimers.
 2. M: choose between fastp and PairLoom by required semantics — sequence recovery vs placement honesty — not by merge rate.
 3. M: deduplicate identical panel entries upstream or keep a duplicate-name map; 194 duplicate groups drove 578 MAPQ-0 refusals in the pilot.
 4. M: for low-MAPQ-heavy cohorts on large references, measure joint-rescue cost on a sample first; `--no-rescue` opts out.

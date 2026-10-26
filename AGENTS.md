@@ -14,7 +14,7 @@ through pixi so the workspace env — not the ambient PATH — supplies binaries
 | ---- | ------- |
 | Set up env (conda deps + editable install) | `pixi install` |
 | Build the Rust core (`pairloom_core`, required) | `pixi run core` |
-| Full test suite (238 tests) | `pixi run test` |
+| Full test suite (242 tests) | `pixi run test` |
 | Stop at first failure | `pixi run test-fast` |
 | Lint (ruff check) | `pixi run lint` |
 | Format check / apply | `pixi run format` / `pixi run format-fix` |
