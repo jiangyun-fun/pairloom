@@ -1511,3 +1511,26 @@ The user asked for a classic BAM that introduces every type of failure reason an
 Files (pairloom repo): Created examples/build_classic_bam.py, examples/gallery/{classic.fa,classic.fa.fai,classic.bam,OUTCOMES.md}, this entry.
 
 Git: pairloom commit on main, not pushed (parallel session owns pushes).
+
+## Verify the gallery BAM with pairloom automatically
+
+```
+level: medium
+date: 2026-10-26
+```
+
+### description
+
+The user asked whether the gallery BAM is checked by pairloom; the manual verification existed, but nothing re-checked it on future changes.
+
+### result
+
+1. Answered: it had been verified by five manual runs; no automated check existed.
+2. Implemented: tests/test_gallery.py builds the gallery and asserts the full matrix — 5 merges with ZR/ZN/N evidence, 15 failure reasons, classifications, and the 4 policy-gated reasons via flags.
+3. Verified: suite 250 passed; ruff clean; AGENTS/README test counts updated.
+
+### change
+
+Files (pairloom repo): Created tests/test_gallery.py; Updated AGENTS.md, README.md (test counts), this entry.
+
+Git: pairloom 5de3647, cb85fbd, plus this docs commit; not pushed.
