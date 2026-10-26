@@ -1326,3 +1326,24 @@ The user asked what the `rescue_unsupported_alignment` failure reason means, aft
 ### change
 
 None (question turn; this entry only).
+
+## Explain how fastp merged pair A00202:2248:H5JJNDSXG:3:1105:19569:10426
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked how fastp merged one specific fastp-only pair from the dedup-run export.
+
+### result
+
+1. Answered: 150+150 bp mates overlap by 139 bp (fragment 161 bp); 6 conflicts, all R1 q11 vs R2 q37; fastp kept R2's q37 base every time and took max quality on 56 agreeing positions.
+2. Reconstructed: the merged 161-mer is exactly F1-2859[1:80] + C + revcomp(F1-3118)[1:80] — an inverted dimer with a 1-bp junction; SE halves align NM 0 at MAPQ 60.
+3. Contrasted: PairLoom refused different_contig (primaries on F1-2859/F1-3118); chimeric subtype did not fire — R1's rc-oriented clip is not contained in R2's stored sequence.
+
+### change
+
+None (question turn; this entry only).
