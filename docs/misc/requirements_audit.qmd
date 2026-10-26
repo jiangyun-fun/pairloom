@@ -1119,3 +1119,24 @@ The user asked whether the 19 detailed reason categories should replace --read-s
 ### change
 
 None (design turn).
+
+## Explain how unmapped reads are processed
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked how unmapped reads flow through pairloom.
+
+### result
+
+1. Answered: unmapped records are never dropped; templates group all records by qname; exactly-one-mapped templates classify left/right_aligned_only and the mapped mate gets single-read leftmost normalization while the unmapped mate keeps no alignment work but receives SAM-convention field updates (mate locus, RNEXT/PNEXT to the adjusted position, MQ mirroring, 0x2 cleared).
+2. Verified from source: _adjust_single body (pipeline.py) and README Record policy lines 60-80; unmapped records are tagged ZC:Z:<classification> and pass to the unmerged stream; neither-mapped templates classify neither_aligned untouched.
+3. Noted: unmapped mates never enter merging or rescue; benchmark figures: 12,730 such templates at full scale, 6,481 of them fastp-only merges.
+
+### change
+
+None (question turn).
