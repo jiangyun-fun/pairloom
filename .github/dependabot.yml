@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    groups:
+      deps:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /rust
+    schedule:
+      interval: weekly
+    labels: [dependencies]
+    groups:
+      deps:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
