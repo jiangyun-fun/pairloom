@@ -145,17 +145,20 @@ class TestRecordPolicy:
             assert rec.reference_start == UNIQUE + 2  # never adjusted
         stats = fx.read_parquet(out["read_stats_parquet"])
         by_type = dict(zip(stats["type"], stats["count"], strict=False))
-        # Non-primary records block merging by policy.
-        assert by_type["both_aligned"] == 1
+        # Non-primary evidence no longer blocks merging by default: the
+        # pair classifies mergeable (in adjust mode records still pass
+        # through untouched, as asserted above).
+        assert by_type["mergeable"] == 1
 
     def test_non_primary_blocks_merging_in_merge_mode(self, fx) -> None:
+        """Under --no-merge-non-primary the old refusal policy holds."""
         ref = fx.ref_seqs["chr1"]
         pair = fx.pair("sp2", UNIQUE, UNIQUE + 5, read_len=20)
         supplementary = fx.make_record(
             "sp2", 0x1 | 0x40 | 0x800, UNIQUE + 2, "15M", ref[UNIQUE + 2 : UNIQUE + 17]
         )
         fx.write_bam_and_set([*pair, supplementary])
-        code, out = fx.run(mode="merge")
+        code, out = fx.run(mode="merge", extra=["--no-merge-non-primary"])
         assert code == 0
         assert fx.read_bam(out["merged_bam"]) == []
         names = [r.query_name for r in fx.read_bam(out["unmerged_bam"])]

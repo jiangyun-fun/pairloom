@@ -595,7 +595,8 @@ class TestOffHeaderContigs:
 
 class TestNonPrimaryGuard:
     def test_cross_contig_secondary_blocks_rescue(self, fx, capsys) -> None:
-        """Non-primary records exclude a template from rescue everywhere (review 6.2).
+        """Under --no-merge-non-primary, non-primary records exclude a
+        template from rescue everywhere (review 6.2).
 
         On the cross-contig path no merge gate runs before rescue, so the
         exclusion must be enforced up front: the primaries may not move
@@ -615,7 +616,7 @@ class TestNonPrimaryGuard:
             mate_pos=2,
         )
         fx.write_bam_and_set([*pair, secondary])
-        code, out = fx.run(mode="merge")
+        code, out = fx.run(mode="merge", extra=["--no-merge-non-primary"])
         assert code == 0
         assert fx.read_bam(out["merged_bam"]) == []
         unmerged = fx.read_bam(out["unmerged_bam"])
@@ -625,6 +626,31 @@ class TestNonPrimaryGuard:
         assert (by_flag[0x80].reference_name, by_flag[0x80].reference_start) == ("seq1", 2)
         assert all(not r.has_tag("ZR") for r in unmerged)
         assert reason_summary(capsys) == {"different_contig": 1}
+
+    def test_cross_contig_secondary_rescues_under_default(self, fx) -> None:
+        """Default policy: the same template reaches rescue and merges."""
+        pair = build_pair(fx, CASE_A, "s2", ("seq2", 0, False), ("seq1", 2, True))
+        secondary = fx.make_record(
+            "s2",
+            0x1 | 0x40 | 0x100,
+            0,
+            "2M",
+            "AA",
+            mapq=0,
+            contig="seq2",
+            mate_contig="seq1",
+            mate_pos=2,
+        )
+        fx.write_bam_and_set([*pair, secondary])
+        code, out = fx.run(mode="merge")
+        assert code == 0
+        merged = fx.read_bam(out["merged_bam"])
+        assert len(merged) == 1
+        assert merged[0].get_tag("ZR") == 1  # rescue marker
+        assert merged[0].get_tag("ZN") == 1  # non-primary evidence marker
+        assert merged[0].mapping_quality == 0
+        # Drop policy: the secondary does not survive into any output.
+        assert fx.read_bam(out["unmerged_bam"]) == []
 
 
 class TestShapeGate:

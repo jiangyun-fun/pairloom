@@ -95,12 +95,16 @@ class TemplateResult:
     observations: tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None = None
     #: aligned reference overlap of a merged pair (merged templates only)
     overlap_len: int | None = None
+    #: True when a MERGED template carried secondary/supplementary
+    #: evidence (consensus carries the evidence tag; those records dropped)
+    non_primary_evidence: bool = False
 
 
 @dataclass(slots=True)
 class RunSummary:
     classification_counts: dict[str, int]
     merge_reasons: dict[str, int]
+    merged_non_primary: int
     reported_disagreement_positions: int
     outputs: dict[str, Path]
     sorted: bool
@@ -233,7 +237,7 @@ def _process_chunk_range(
             writers[stream] = pysam.AlignmentFile(path, "wb", header=header)
             paths[stream] = path
         bam.seek(start_vo)
-        meta: list[tuple[str, str | None, int | None]] = []
+        meta: list[tuple[str, str | None, int | None, bool]] = []
         obs: list[tuple[bytes, bytes, bytes, bytes, bytes, bytes]] = []
         group: list[Any] = []
         current_name: str | None = None
@@ -249,7 +253,14 @@ def _process_chunk_range(
                 raise DataInvariantError("BAM record without QNAME")
             if group and name != current_name:
                 result = process_template(group, state, emit_writers=writers)
-                meta.append((result.classification, result.merge_reason, result.overlap_len))
+                meta.append(
+                    (
+                        result.classification,
+                        result.merge_reason,
+                        result.overlap_len,
+                        result.non_primary_evidence,
+                    )
+                )
                 if result.observations is not None:
                     obs.append(result.observations)
                 group = []
@@ -257,7 +268,14 @@ def _process_chunk_range(
             current_name = name
         if group:
             result = process_template(group, state, emit_writers=writers)
-            meta.append((result.classification, result.merge_reason, result.overlap_len))
+            meta.append(
+                (
+                    result.classification,
+                    result.merge_reason,
+                    result.overlap_len,
+                    result.non_primary_evidence,
+                )
+            )
             if result.observations is not None:
                 obs.append(result.observations)
         return meta, paths, _chunk_observation_arrays(obs)
@@ -391,25 +409,31 @@ def process_template(
             else:
                 emit_writers["adjusted"].write(record)
     elif merged_line is not None:
-        # The consensus record replaces the primary mates; only non-primary
-        # records (which by policy prevent merging) could continue, so this
-        # template never duplicates into the unmerged output.
+        # The consensus record replaces the primary mates, and the
+        # template's non-primary records are dropped by policy: their
+        # evidence survives in the consensus record's preserved outer
+        # soft clips plus the evidence tag. Refused templates keep every
+        # record (the branch below), so nothing is silently discarded.
         if emit_writers is None:
             out_lines.append(("merged", merged_line.to_string()))
         else:
             emit_writers["merged"].write(merged_line)
-        for record in others:
-            if emit_writers is None:
-                out_lines.append(("unmerged", record.to_string()))
-            else:
-                emit_writers["unmerged"].write(record)
     else:
         for record in records:
             if emit_writers is None:
                 out_lines.append(("unmerged", record.to_string()))
             else:
                 emit_writers["unmerged"].write(record)
-    return TemplateResult(classification, merge_reason, out_lines, obs_payload, overlap_len)
+    return TemplateResult(
+        classification,
+        merge_reason,
+        out_lines,
+        obs_payload,
+        overlap_len,
+        non_primary_evidence=(
+            merged_line is not None and bool(others) and state.cfg.merge_non_primary
+        ),
+    )
 
 
 def _build_core_structure(record: Any) -> Any:
@@ -570,7 +594,7 @@ def _both_mapped(
             orig_mapq1,
             orig_mapq2,
             cfg,
-            shape_blocked=_rescue_shape_blocked(r1, r2, others),
+            shape_blocked=_rescue_shape_blocked(r1, r2, others, cfg),
         ):
             return _attempt_rescue(r1, r2, cands1, cands2, others, obs_payload, state)
         if _is_chimeric_read(r1, r2, state):
@@ -581,7 +605,11 @@ def _both_mapped(
     s2 = _build_core_structure(r2)
     # The records now carry the conservative ADJUSTED MAPQs; the consensus
     # record takes its output MAPQ from those, never from the originals.
-    merged_mapq = min(s1.mapq, s2.mapq)
+    # Templates merged despite non-primary evidence emit MAPQ 0 instead
+    # (rescue-consistent honesty policy for contested placements).
+    evidence = bool(others) and cfg.merge_non_primary
+    gate_non_primary = bool(others) and not cfg.merge_non_primary
+    merged_mapq = 0 if evidence else min(s1.mapq, s2.mapq)
     # Eligibility filters (min_mapq) continue to apply to the ORIGINAL
     # aligner MAPQ (policy comment above).
     s1.mapq = orig_mapq1
@@ -601,7 +629,7 @@ def _both_mapped(
         if blobs[0]:
             obs_payload = blobs
 
-    outcome = _core_merge(s1, s2, cfg, merged_mapq, False, bool(others))
+    outcome = _core_merge(s1, s2, cfg, merged_mapq, False, gate_non_primary)
     overlap_len = outcome.overlap_len
     if not outcome.ok:
         if rescue_eligible(
@@ -609,25 +637,28 @@ def _both_mapped(
             orig_mapq1,
             orig_mapq2,
             cfg,
-            shape_blocked=_rescue_shape_blocked(r1, r2, others),
+            shape_blocked=_rescue_shape_blocked(r1, r2, others, cfg),
         ):
             return _attempt_rescue(r1, r2, cands1, cands2, others, obs_payload, state)
         return None, BOTH_ALIGNED, outcome.reason, obs_payload, None
-    merged_record = _build_merged_record(r1.query_name, outcome, contig, state)
+    merged_record = _build_merged_record(
+        r1.query_name, outcome, contig, state, non_primary=evidence
+    )
     return merged_record, MERGEABLE, None, obs_payload, overlap_len
 
 
-def _rescue_shape_blocked(r1: Any, r2: Any, others: list[Any]) -> bool:
+def _rescue_shape_blocked(r1: Any, r2: Any, others: list[Any], cfg: PairLoomConfig) -> bool:
     """Placement-independent merge exclusions, checked before any rescue search.
 
     These are the gates ``try_merge`` applies before its placement-level
-    reasons on the same-contig path: non-primary records, hard clips,
+    reasons on the same-contig path: non-primary records (only when
+    ``--no-merge-non-primary`` restores the refusal), hard clips,
     missing qualities, reference skips, and conflicting read groups. The
     cross-contig path reaches rescue without running any merge gate, so
     the exclusions are enforced here uniformly — a template failing one
     keeps its original placements on every path.
     """
-    if others:
+    if others and not cfg.merge_non_primary:
         return True
     for record in (r1, r2):
         cigar = record.cigartuples or ()
@@ -685,11 +716,23 @@ def _attempt_rescue(
     # statistics keep testing the ORIGINAL aligner MAPQ, and an eligible
     # rescue always has a sub-threshold mate. Placements are not
     # re-observed at the rescued locus (documented in the README).
-    merged = _core_merge(s1, s2, state.cfg, 0, True, bool(others))
+    merged = _core_merge(
+        s1,
+        s2,
+        state.cfg,
+        0,
+        True,
+        bool(others) and not state.cfg.merge_non_primary,
+    )
     if not merged.ok:
         return None, BOTH_ALIGNED, merged.reason, None, None
     merged_record = _build_merged_record(
-        r1.query_name, merged, state.contig(r1.reference_id), state, rescued=True
+        r1.query_name,
+        merged,
+        state.contig(r1.reference_id),
+        state,
+        rescued=True,
+        non_primary=bool(others) and state.cfg.merge_non_primary,
     )
     return merged_record, MERGEABLE, None, None, merged.overlap_len
 
@@ -891,6 +934,7 @@ def _build_merged_record(
     contig: str,
     state: _WorkerState,
     rescued: bool = False,
+    non_primary: bool = False,
 ) -> Any:
     """Create the single consensus BAM record for a merged pair."""
     record = pysam.AlignedSegment(state.header)
@@ -910,6 +954,11 @@ def _build_merged_record(
         # Jointly rescued pairs: output MAPQ 0 (passed by the caller) plus
         # the rescue marker so downstream tools can tell them apart.
         record.set_tag(RESCUE_TAG, RESCUE_VALUE, value_type="i")
+    if non_primary:
+        # Merged despite secondary/supplementary evidence: the consensus
+        # carries output MAPQ 0 (passed by the caller) and the evidence
+        # marker naming what was dropped (the clips stay in the CIGAR).
+        record.set_tag(state.cfg.evidence_tag, 1, value_type="i")
     if merged.read_group is not None:
         record.set_tag("RG", merged.read_group, value_type="Z")
     ref_end = merged.start0 + _merged_ref_len(merged.cigar)
@@ -1001,6 +1050,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
     validate_paths(cfg)
     stats = StatsCounter()
     reasons: Counter[str] = Counter()
+    merged_non_primary = 0
     published: list[Path] = []
     backups: list[tuple[Path, Path]] = []
     writers: dict[str, _BamWriter] = {}
@@ -1050,11 +1100,17 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                 merge_stats = MergeStatsCollector()
 
                 def on_meta(
-                    classification: str, merge_reason: str | None, overlap_len: int | None
+                    classification: str,
+                    merge_reason: str | None,
+                    overlap_len: int | None,
+                    non_primary_evidence: bool = False,
                 ) -> None:
+                    nonlocal merged_non_primary
                     stats.add(classification)
                     if merge_reason:
                         reasons[merge_reason] += 1
+                    if non_primary_evidence:
+                        merged_non_primary += 1
                     merge_stats.add(classification, merge_reason, overlap_len)
 
                 chunks = _iter_chunks(input_file, cfg.chunk_size)
@@ -1070,6 +1126,7 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                                     result.classification,
                                     result.merge_reason,
                                     result.overlap_len,
+                                    result.non_primary_evidence,
                                 )
                                 if result.observations is not None:
                                     obs.append(result.observations)
@@ -1239,12 +1296,14 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
         "pairloom: done. "
         + ", ".join(f"{k}={v}" for k, v in stats.counts().items())
         + (f"; merge-reasons={dict(reasons)}" if reasons else "")
+        + f"; merged_non_primary={merged_non_primary}"
         + f"; disagreement-positions={aggregator.reported_positions}",
         file=sys.stderr,
     )
     return RunSummary(
         classification_counts=stats.counts(),
         merge_reasons=dict(reasons),
+        merged_non_primary=merged_non_primary,
         reported_disagreement_positions=aggregator.reported_positions,
         outputs=cfg.mode_outputs(),
         sorted=cfg.sort_output,
@@ -1335,8 +1394,8 @@ def _drain_one(pending: deque, on_meta: Any, aggregator: Any, chunk_files: dict)
         raise
     except Exception as exc:
         raise WorkerError(f"worker chunk failed: {exc}") from exc
-    for classification, merge_reason, overlap_len in meta:
-        on_meta(classification, merge_reason, overlap_len)
+    for classification, merge_reason, overlap_len, non_primary_evidence in meta:
+        on_meta(classification, merge_reason, overlap_len, non_primary_evidence)
     for stream, path in paths.items():
         chunk_files[stream].append(path)
     aggregator.add_chunk(*arrays)

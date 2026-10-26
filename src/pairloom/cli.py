@@ -63,6 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="ZM",
         help="per-record merge-failure reason tag on unmerged primaries (default ZM)",
     )
+    io_grp2.add_argument(
+        "--evidence-tag",
+        default="ZN",
+        help="tag marking merges of non-primary templates (default ZN)",
+    )
 
     pair = parser.add_argument_group("pair optimization")
     pair.add_argument(
@@ -91,6 +96,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "disable joint low-MAPQ pair rescue (default: enabled; see the README's rescue section)"
+        ),
+    )
+    pair.add_argument(
+        "--no-merge-non-primary",
+        action="store_true",
+        help=(
+            "refuse templates carrying secondary/supplementary records with reason "
+            "non_primary_records (default: they merge; non-primary records are dropped, "
+            "the consensus carries the evidence tag at output MAPQ 0)"
         ),
     )
     pair.add_argument(
@@ -216,6 +230,7 @@ def build_config(args: argparse.Namespace) -> PairLoomConfig:
         mode=args.mode,
         merge_stats_parquet=(Path(args.merge_stats_parquet) if args.merge_stats_parquet else None),
         reason_tag=args.reason_tag,
+        evidence_tag=args.evidence_tag,
         adjusted_bam=Path(args.adjusted_bam) if args.adjusted_bam else None,
         merged_bam=Path(args.merged_bam) if args.merged_bam else None,
         unmerged_bam=Path(args.unmerged_bam) if args.unmerged_bam else None,
@@ -244,6 +259,7 @@ def build_config(args: argparse.Namespace) -> PairLoomConfig:
         index_output=args.index_output,
         force_mapq60_exact=args.force_mapq60_exact,
         rescue_enabled=not args.no_rescue,
+        merge_non_primary=not args.no_merge_non_primary,
         force=args.force,
         debug=args.debug,
         max_aggregation_records=args.max_aggregation_records,

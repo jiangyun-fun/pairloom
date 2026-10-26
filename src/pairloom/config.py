@@ -54,6 +54,7 @@ class PairLoomConfig:
     threads: int = 1
     status_tag: str = "ZC"
     reason_tag: str = "ZM"
+    evidence_tag: str = "ZN"
     min_base_quality: int = 20
     min_mapq: int = 20
     #: 0 explicitly allows adjacent (zero-overlap) joining; an uncovered
@@ -79,6 +80,12 @@ class PairLoomConfig:
     #: Joint low-MAPQ pair rescue across references (default on; the CLI
     #: exposes it as the ``--no-rescue`` opt-out).
     rescue_enabled: bool = True
+    #: Merge templates whose primaries are concordant but that carry
+    #: secondary/supplementary records (default on; the CLI exposes the
+    #: ``--no-merge-non-primary`` opt-out). Merged consensus records then
+    #: carry the evidence tag at output MAPQ 0, and the template's
+    #: non-primary records are dropped.
+    merge_non_primary: bool = True
     force: bool = False
     debug: bool = False
     # Internal tuning knobs (documented; not CLI-facing).
@@ -130,6 +137,17 @@ class PairLoomConfig:
             raise ConfigurationError(
                 f"reason_tag {self.reason_tag!r} must differ from the rescue marker "
                 f"{RESCUE_TAG!r} and the status tag {self.status_tag!r}"
+            )
+        if not _TAG_RE.match(self.evidence_tag):
+            raise ConfigurationError(
+                f"invalid evidence_tag {self.evidence_tag!r}: must be exactly two SAM tag "
+                "characters ([A-Za-z][A-Za-z0-9])"
+            )
+        if self.evidence_tag in (RESCUE_TAG, self.status_tag, self.reason_tag):
+            raise ConfigurationError(
+                f"evidence_tag {self.evidence_tag!r} must differ from the rescue marker "
+                f"{RESCUE_TAG!r}, the status tag {self.status_tag!r}, and the reason tag "
+                f"{self.reason_tag!r}"
             )
         if self.status_tag == RESCUE_TAG:
             raise ConfigurationError(
