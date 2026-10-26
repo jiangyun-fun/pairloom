@@ -1368,3 +1368,24 @@ The user proposed that pairs refused only for non_primary_records should instead
 ### change
 
 None (question turn; this entry only).
+
+## Explain how supplementary/secondary records are processed today
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked how supplementary and secondary records are processed currently, following the merge-non-primary design discussion.
+
+### result
+
+1. Answered: opaque passengers — split out at grouping (records.py:77), never adjusted or tagged (ZC/ZM cover primaries only), never dropped; their presence blocks merge and rescue.
+2. Verified routing: refused templates send all records to the unmerged stream; the merged branch's others-to-unmerged loop (pipeline.py:399) is dormant under the gate.
+3. Measured: dedup pilot 689 pairs carry non-primary records (673 fastp-only, 16 neither, 0 merged) — no merged pair ever carries one.
+
+### change
+
+None (question turn; this entry only).
