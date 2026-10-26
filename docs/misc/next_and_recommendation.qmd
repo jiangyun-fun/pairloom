@@ -5,7 +5,7 @@ author: "Yun Jiang"
 
 ## next
 
-1. H: decide (flag vs default; drop vs route) and implement merge-non-primary with MAPQ-0 split-evidence policy, evidence tag, tests, and a default-path equivalence gate.
+1. H: implement merge-non-primary per plan 20261026-162249 (default on, drop, ZN tag, MAPQ 0, done-line counter); verify with tests + pilot re-run.
 2. M: re-run the FULL benchmark with the deduplicated panel (and the new mode once shipped) to confirm pilot-level shifts at 6.1M-pair scale.
 3. M: extend candidate discovery to slide gapped (indel-bearing) alignments via bounded local realignment.
 4. M: batch the joint-rescue reference search with a multi-pattern index (Aho-Corasick style, per work chunk).

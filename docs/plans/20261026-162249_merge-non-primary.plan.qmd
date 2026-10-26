@@ -1,0 +1,72 @@
+---
+title: "Merge non-primary templates by default — plan"
+author: "Yun Jiang"
+date: today
+---
+
+# Objective
+
+Templates whose two primary records are concordant (same contig, FR orientation,
+both above the MAPQ gate) but that carry secondary (0x100) or supplementary
+(0x800) records are currently always refused with reason `non_primary_records`
+(merge.py:123) and blocked from rescue. Per the user's decision, this gate is
+removed BY DEFAULT: such templates now go through the ordinary merge gates.
+Evidence: all 231 dedup-pilot refusals under this reason had concordant
+primaries — the gate was their only refusal.
+
+# Design decisions (settled with the user, 2026-10-26)
+
+1. **Default ON, no separate flag surface**: `--merge-non-primary` is default
+   true; `--no-merge-non-primary` restores today's behavior (the reason string
+   stays in the vocabulary for the opt-out only).
+2. **Drop, not route**: when such a template MERGES, its non-primary records
+   are dropped from the output. Routing them to the unmerged stream would
+   orphan records whose SA tags point at the replaced primaries; the SA-rewrite
+   workaround is not worth its cost. Evidence survives in the consensus
+   record's preserved outer soft clips.
+3. **Evidence tag**: the merged record carries `ZN:i:1` when non-primary
+   evidence was present (validated distinct from ZC, ZR, and the reason tag).
+4. **Merged MAPQ 0** when non-primary evidence was present — same policy as
+   rescued pairs (README MAPQ table); no change when no evidence.
+5. **Refused templates unchanged**: if the ordinary gates refuse, all records
+   (non-primary included) pass through and the template reports the REAL
+   failing reason (`indel_conflict`, `insufficient_overlap`, ...).
+6. **Rescue consistency**: the non-primary term leaves `shape_blocked` when
+   merging is enabled, so low-MAPQ secondary-bearing pairs reach rescue.
+7. **Telemetry**: the done line gains `merged_non_primary=<n>`.
+
+# Scope
+
+1. `config.py`: `merge_non_primary: bool = True`.
+2. `cli.py`: `--merge-non-primary / --no-merge-non-primary` (default on).
+3. `pipeline.py`: gate the `has_non_primary` argument on the config; on merge
+   success with evidence, set `ZN`, force output MAPQ 0, drop `others`;
+   on failure, keep today's pass-through; rescue `shape_blocked` term.
+4. `merge.py` / rust core: unchanged (the flag already parameterizes the gate).
+5. `README.md`: record policy paragraph rewritten; MAPQ table row; ZN tag;
+   done-line field. `AGENTS.md`: test count.
+6. `benchmarks/equivalence_check.py`: nothing new needed — the previously
+   merging population is untouched (it carries no non-primary records), so the
+   gate compares that subpopulation record-identically; the 231 move is the
+   intended delta.
+
+# Verification
+
+1. New tests: (a) same-contig supplementary template merges, ZN set, MAPQ 0,
+   supplementaries dropped; (b) refused case (e.g. indel conflict) keeps all
+   records and reports the real reason; (c) `--no-merge-non-primary` reproduces
+   `non_primary_records` exactly.
+2. Update existing tests that assert the old default; full suite green; ruff.
+3. Pilot: re-run on the dedup panel; previously-merged templates
+   record-identical; done-line reconciliation (`merged_non_primary` count,
+   reason shifts 231 -> mergeable + real reasons); re-join against fastp arm
+   for the new category counts.
+
+# Risks
+
+- Reason-distribution drift: the 231 split into merged vs. real refusals —
+  expected and to be reported, not normalized away.
+- The drop changes template record counts in merged.bam vs input for these
+  templates — documented as policy, surfaced by ZN.
+- Existing docs/tests assume the old contract; all sites must be found
+  (grep `non_primary`) or the suite will catch them.

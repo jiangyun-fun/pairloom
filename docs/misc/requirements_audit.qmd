@@ -1369,7 +1369,26 @@ The user proposed that pairs refused only for non_primary_records should instead
 
 None (question turn; this entry only).
 
-## Explain how supplementary/secondary records are processed today
+## Adopt default-on merge-non-primary; plan written
+
+```
+level: high
+date: 2026-10-26
+```
+
+### description
+
+The user asked whether merge-non-primary should be the default — i.e. no non_primary_records reason by default. I agreed; the design is settled and the plan is written.
+
+### result
+
+1. Answered: yes — the gate only masked concordant primaries (231/231 same contig, FR, MAPQ>=20); honesty is preserved by MAPQ 0, the ZN evidence tag, and preserved clips.
+2. Decided: default ON with a --no-merge-non-primary opt-out; drop (not route) non-primary records of merged templates; done line gains merged_non_primary.
+3. Planned: docs/plans/20261026-162249_merge-non-primary.plan.qmd — scope, tests, pilot verification, risks.
+
+### change
+
+Files (pairloom repo): Created docs/plans/20261026-162249_merge-non-primary.plan.qmd; Updated docs/misc/next_and_recommendation.qmd, this entry.
 
 ```
 level: low
