@@ -135,7 +135,18 @@ rescues):
    counts as evidence of uniqueness — two equally supported placements
    leave the pair unmerged with reason `rescue_ambiguous`.
 
-Rescue failures surface in the stderr merge-reason summary
+Cross-contig pairs whose mates show read-through evidence (a mate's outer
+soft clip of at least 10 bp occurs in the other mate's stored sequence)
+report `chimeric_read` instead of `different_contig`. `--reason-tag`
+(default `ZM`) writes `ZM:Z:<reason>` on both primary records of every
+unmerged failed template — merged and unaligned-only templates carry no
+reason tag. `--merge-stats-parquet` (optional, explicit path) writes a
+long-format table `type` (classification | reason | family |
+overlap_hist), `key`, `count`; the family rollup groups the reasons
+(chimeric_split, ambiguous_locus, unsupported_alignment, indel_conflict,
+geometry, record_policy) plus unaligned and merged; overlap_hist is the
+merged-overlap histogram and sums to the mergeable count. Rescue
+failures surface in the stderr merge-reason summary
 (`rescue_ambiguous`, `rescue_no_compatible_pair`, `rescue_search_truncated`,
 `rescue_unsupported_alignment` — those templates keep their original
 placements and records). Successful rescues surface as the `ZR:i:1` tag on

@@ -50,8 +50,10 @@ class PairLoomConfig:
     adjusted_bam: Path | None = None
     merged_bam: Path | None = None
     unmerged_bam: Path | None = None
+    merge_stats_parquet: Path | None = None
     threads: int = 1
     status_tag: str = "ZC"
+    reason_tag: str = "ZM"
     min_base_quality: int = 20
     min_mapq: int = 20
     #: 0 explicitly allows adjacent (zero-overlap) joining; an uncovered
@@ -118,6 +120,16 @@ class PairLoomConfig:
             raise ConfigurationError(
                 f"invalid status_tag {self.status_tag!r}: must be exactly two SAM tag "
                 "characters ([A-Za-z][A-Za-z0-9])"
+            )
+        if not _TAG_RE.match(self.reason_tag):
+            raise ConfigurationError(
+                f"invalid reason_tag {self.reason_tag!r}: must be exactly two SAM tag "
+                "characters ([A-Za-z][A-Za-z0-9])"
+            )
+        if self.reason_tag in (RESCUE_TAG, self.status_tag):
+            raise ConfigurationError(
+                f"reason_tag {self.reason_tag!r} must differ from the rescue marker "
+                f"{RESCUE_TAG!r} and the status tag {self.status_tag!r}"
             )
         if self.status_tag == RESCUE_TAG:
             raise ConfigurationError(

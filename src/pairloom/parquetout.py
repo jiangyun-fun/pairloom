@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import heapq
 import os
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from operator import itemgetter
@@ -290,10 +291,7 @@ class FastDisagreementAccumulator:
             self._merge_positions(keys, dp, disg, ref)
         if akeys.size:
             self._merge_alts(akeys, abase, astrand, acount)
-        if (
-            self._r_keys is not None
-            and self._r_keys.size > self.cfg.max_aggregation_records
-        ):
+        if self._r_keys is not None and self._r_keys.size > self.cfg.max_aggregation_records:
             self._spill_reduced()
 
     def _merge_positions(
@@ -322,8 +320,7 @@ class FastDisagreementAccumulator:
             if bad.size:
                 key = int(keys[m[bad[0]]])
                 raise DataInvariantError(
-                    f"inconsistent reference base at tid {key >> 32} pos "
-                    f"{(key & 0xFFFF_FFFF) + 1}"
+                    f"inconsistent reference base at tid {key >> 32} pos {(key & 0xFFFF_FFFF) + 1}"
                 )
         # unmatched positions are inserted in key order (keys arrive sorted)
         new_pos = np.flatnonzero(~match)
@@ -350,10 +347,7 @@ class FastDisagreementAccumulator:
 
     def _reduce(self, force: bool = False) -> None:  # noqa: ARG002 - spill compat
         """Legacy entry point: everything is merged incrementally now."""
-        if (
-            self._r_keys is not None
-            and self._r_keys.size > self.cfg.max_aggregation_records
-        ):
+        if self._r_keys is not None and self._r_keys.size > self.cfg.max_aggregation_records:
             self._spill_reduced()
 
     def _spill_reduced(self) -> None:
@@ -446,6 +440,96 @@ class FastDisagreementAccumulator:
                 pf.close()
         self.reported_positions = reported
         return reported
+
+
+#: Failure-reason families for the merge-stats rollup. The unaligned and
+#: merged families cover the classification outcomes that carry no reason.
+REASON_FAMILIES: dict[str, str] = {
+    "chimeric_read": "chimeric_split",
+    "different_contig": "chimeric_split",
+    "rescue_ambiguous": "ambiguous_locus",
+    "mapq_below_min": "ambiguous_locus",
+    "rescue_search_truncated": "ambiguous_locus",
+    "rescue_unsupported_alignment": "unsupported_alignment",
+    "indel_conflict": "indel_conflict",
+    "insertion_conflict": "indel_conflict",
+    "orientation_incompatible": "geometry",
+    "fragment_length_out_of_bounds": "geometry",
+    "fragment_gap": "geometry",
+    "insufficient_overlap": "geometry",
+    "non_primary_records": "record_policy",
+    "hard_clipped_mate": "record_policy",
+    "qualities_missing": "record_policy",
+    "reference_skip_unsupported": "record_policy",
+    "strict_conflict": "record_policy",
+    "read_group_conflict": "record_policy",
+    "empty_consensus": "record_policy",
+    "rescue_no_compatible_pair": "ambiguous_locus",
+    "left_aligned_only": "unaligned",
+    "right_aligned_only": "unaligned",
+    "neither_aligned": "unaligned",
+    "mergeable": "merged",
+}
+
+MERGE_STATS_SCHEMA = pa.schema(
+    [
+        pa.field("type", pa.string()),
+        pa.field("key", pa.string()),
+        pa.field("count", pa.int64()),
+    ]
+)
+
+
+class MergeStatsCollector:
+    """Per-run classification/reason/family/overlap counters.
+
+    Fed once per template from the meta stream; deterministic row ordering
+    at output time (type, then key; the overlap histogram sorts numerically).
+    """
+
+    def __init__(self) -> None:
+        self._classification: Counter[str] = Counter()
+        self._reason: Counter[str] = Counter()
+        self._family: Counter[str] = Counter()
+        self._overlap: Counter[int] = Counter()
+
+    def add(self, classification: str, merge_reason: str | None, overlap_len: int | None) -> None:
+        self._classification[classification] += 1
+        key = merge_reason if merge_reason is not None else classification
+        self._reason[key] += 1
+        self._family[REASON_FAMILIES.get(key, "other")] += 1
+        if overlap_len is not None:
+            self._overlap[overlap_len] += 1
+
+    def rows(self) -> list[tuple[str, str, int]]:
+        rows: list[tuple[str, str, int]] = []
+        for k in sorted(self._classification):
+            rows.append(("classification", k, self._classification[k]))
+        for k in sorted(self._reason):
+            rows.append(("reason", k, self._reason[k]))
+        for k in sorted(self._family):
+            rows.append(("family", k, self._family[k]))
+        for k in sorted(self._overlap):
+            rows.append(("overlap_hist", str(k), self._overlap[k]))
+        return rows
+
+
+def write_merge_stats_parquet(
+    out_path: Path, rows: list[tuple[str, str, int]], compression: str
+) -> None:
+    """Write the merge-stats long-format table deterministically."""
+    table = pa.Table.from_arrays(
+        [
+            pa.array([r[0] for r in rows], type=pa.string()),
+            pa.array([r[1] for r in rows], type=pa.string()),
+            pa.array([r[2] for r in rows], type=pa.int64()),
+        ],
+        schema=MERGE_STATS_SCHEMA,
+    )
+    try:
+        pq.write_table(table, str(out_path), compression=_codec(compression))
+    except OSError as exc:
+        raise OutputError(f"cannot write merge-stats Parquet {out_path}: {exc}") from exc
 
 
 def _spill_stream(pf: pq.ParquetFile, batch_size: int) -> Iterator[SpillRow]:

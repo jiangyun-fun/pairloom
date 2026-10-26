@@ -52,6 +52,17 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--unmerged-bam", help="unmergeable pairs BAM (mode merge)")
     out.add_argument("--disagreement-parquet", required=True, help="overlap disagreement table")
     out.add_argument("--read-stats-parquet", required=True, help="classification counts table")
+    out.add_argument(
+        "--merge-stats-parquet",
+        help="optional long-format table: classification/reason/family counts "
+        "plus merged-overlap histogram",
+    )
+    io_grp2 = parser.add_argument_group("tags")
+    io_grp2.add_argument(
+        "--reason-tag",
+        default="ZM",
+        help="per-record merge-failure reason tag on unmerged primaries (default ZM)",
+    )
 
     pair = parser.add_argument_group("pair optimization")
     pair.add_argument(
@@ -203,6 +214,8 @@ def build_config(args: argparse.Namespace) -> PairLoomConfig:
         input_path=Path(args.input),
         reference_path=Path(args.reference),
         mode=args.mode,
+        merge_stats_parquet=(Path(args.merge_stats_parquet) if args.merge_stats_parquet else None),
+        reason_tag=args.reason_tag,
         adjusted_bam=Path(args.adjusted_bam) if args.adjusted_bam else None,
         merged_bam=Path(args.merged_bam) if args.merged_bam else None,
         unmerged_bam=Path(args.unmerged_bam) if args.unmerged_bam else None,

@@ -35,7 +35,7 @@ from pairloom.alignment import (
     revcomp,
 )
 from pairloom.candidates import discover_candidates, normalize_record_cigar, single_read_leftmost
-from pairloom.cigarops import CIGAR_H, CIGAR_N, reverse_cigar
+from pairloom.cigarops import CIGAR_H, CIGAR_I, CIGAR_M, CIGAR_N, CIGAR_S, reverse_cigar
 from pairloom.classify import (
     BOTH_ALIGNED,
     LEFT_ALIGNED_ONLY,
@@ -55,7 +55,12 @@ from pairloom.exceptions import (
 )
 from pairloom.mapq import adjusted_mapq
 from pairloom.pairing import select_pair
-from pairloom.parquetout import FastDisagreementAccumulator, write_read_stats_parquet
+from pairloom.parquetout import (
+    FastDisagreementAccumulator,
+    MergeStatsCollector,
+    write_merge_stats_parquet,
+    write_read_stats_parquet,
+)
 from pairloom.records import (
     check_pair_flags,
     detect_sort_order,
@@ -88,6 +93,8 @@ class TemplateResult:
     #: batched overlap aggregates as Rust-core blobs:
     #: (keys, disg, ref, altkeys, altbases, altstrands), or None
     observations: tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None = None
+    #: aligned reference overlap of a merged pair (merged templates only)
+    overlap_len: int | None = None
 
 
 @dataclass(slots=True)
@@ -201,7 +208,7 @@ def _process_chunk_range(
     chunk_index: int,
     tmp_dir: str,
     streams: tuple[str, ...],
-) -> tuple[list[tuple[str, str | None]], dict[str, str], tuple]:
+) -> tuple[list[tuple[str, str | None, int | None]], dict[str, str], tuple]:
     """Pool entry point: stream one template-group-aligned BAM range.
 
     Workers read the (name-sorted) BAM themselves at a virtual offset and
@@ -226,7 +233,7 @@ def _process_chunk_range(
             writers[stream] = pysam.AlignmentFile(path, "wb", header=header)
             paths[stream] = path
         bam.seek(start_vo)
-        meta: list[tuple[str, str | None]] = []
+        meta: list[tuple[str, str | None, int | None]] = []
         obs: list[tuple[bytes, bytes, bytes, bytes, bytes, bytes]] = []
         group: list[Any] = []
         current_name: str | None = None
@@ -242,7 +249,7 @@ def _process_chunk_range(
                 raise DataInvariantError("BAM record without QNAME")
             if group and name != current_name:
                 result = process_template(group, state, emit_writers=writers)
-                meta.append((result.classification, result.merge_reason))
+                meta.append((result.classification, result.merge_reason, result.overlap_len))
                 if result.observations is not None:
                     obs.append(result.observations)
                 group = []
@@ -250,7 +257,7 @@ def _process_chunk_range(
             current_name = name
         if group:
             result = process_template(group, state, emit_writers=writers)
-            meta.append((result.classification, result.merge_reason))
+            meta.append((result.classification, result.merge_reason, result.overlap_len))
             if result.observations is not None:
                 obs.append(result.observations)
         return meta, paths, _chunk_observation_arrays(obs)
@@ -336,14 +343,19 @@ def process_template(
     merge_reason: str | None = None
     merged_line: str | None = None
     obs_payload: tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None = None
+    overlap_len: int | None = None
 
     if r1 is not None and r2 is not None:
         m1 = not r1.flag & FLAG_UNMAPPED
         m2 = not r2.flag & FLAG_UNMAPPED
         if m1 and m2:
-            merged_line, classification, merge_reason, obs_payload = _both_mapped(
-                r1, r2, others, state
-            )
+            (
+                merged_line,
+                classification,
+                merge_reason,
+                obs_payload,
+                overlap_len,
+            ) = _both_mapped(r1, r2, others, state)
         elif m1:
             classification = LEFT_ALIGNED_ONLY
             _adjust_single(r1, r2, state)
@@ -368,6 +380,8 @@ def process_template(
 
     for record in primaries:
         assign_status_tag(record, state.cfg, classification)
+        if merge_reason is not None:
+            record.set_tag(state.cfg.reason_tag, merge_reason, value_type="Z")
 
     out_lines: list[tuple[str, str]] = []
     if state.cfg.mode == "adjust":
@@ -395,7 +409,7 @@ def process_template(
                 out_lines.append(("unmerged", record.to_string()))
             else:
                 emit_writers["unmerged"].write(record)
-    return TemplateResult(classification, merge_reason, out_lines, obs_payload)
+    return TemplateResult(classification, merge_reason, out_lines, obs_payload, overlap_len)
 
 
 def _build_core_structure(record: Any) -> Any:
@@ -445,10 +459,73 @@ def _core_merge(
     )
 
 
+#: Minimum outer-clip length that counts as read-through evidence.
+_CHIMERIC_MIN_CLIP = 10
+#: Memoization cap for the clip-containment test (sequence-pair keyed).
+_CHIMERIC_CACHE_CAP = 65536
+
+
+def _outer_clips(record: Any) -> tuple[str, str]:
+    """A record's leading and trailing soft-clip bases, stored orientation."""
+    cigar = record.cigartuples or ()
+    seq = record.query_sequence or ""
+    lead = trail = ""
+    qi = 0
+    for op, length in cigar:
+        if op == CIGAR_S:
+            if qi == 0:
+                lead = seq[:length]
+            else:
+                trail = seq[qi : qi + length]
+        if op in (CIGAR_M, CIGAR_I, CIGAR_S, 7, 8):
+            qi += length
+    return lead, trail
+
+
+def _is_chimeric_read(r1: Any, r2: Any, state: _WorkerState) -> bool:
+    """True when cross-contig mates show read-through evidence.
+
+    A concatemer or chimera makes each mate read past its oligo into the
+    partner's sequence, so a mate's outer clip occurs as a substring of the
+    other mate's stored sequence. Pure placement-level check; memoized on
+    the sequence triple (concatemers repeat massively on oligo pools).
+    """
+    key = (r1.query_name, r1.query_sequence, r2.query_sequence)
+    cached = getattr(state, "chimeric_cache", None)
+    if cached is not None and key in cached:
+        return cached[key]
+    seq1 = r1.query_sequence or ""
+    seq2 = r2.query_sequence or ""
+    verdict = False
+    if seq1 and seq2:
+        for clip in _outer_clips(r1):
+            if len(clip) >= _CHIMERIC_MIN_CLIP and clip in seq2:
+                verdict = True
+                break
+        if not verdict:
+            for clip in _outer_clips(r2):
+                if len(clip) >= _CHIMERIC_MIN_CLIP and clip in seq1:
+                    verdict = True
+                    break
+    if cached is None:
+        cached = {}
+        state.chimeric_cache = cached
+    if len(cached) >= _CHIMERIC_CACHE_CAP:
+        cached.clear()
+    cached[key] = verdict
+    return verdict
+
+
 def _both_mapped(
     r1: Any, r2: Any, others: list[Any], state: _WorkerState
-) -> tuple[Any | None, str, str | None, tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None]:
-    """Jointly adjust a both-mapped pair; returns (merged record, class, reason, obs)."""
+) -> tuple[
+    Any | None,
+    str,
+    str | None,
+    tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None,
+    int | None,
+]:
+    """Jointly adjust a both-mapped pair; returns (merged record, class, reason, obs, overlap)."""
     cfg = state.cfg
     tid1, tid2 = r1.reference_id, r2.reference_id
     if tid1 < 0 or tid2 < 0:
@@ -496,7 +573,9 @@ def _both_mapped(
             shape_blocked=_rescue_shape_blocked(r1, r2, others),
         ):
             return _attempt_rescue(r1, r2, cands1, cands2, others, obs_payload, state)
-        return None, BOTH_ALIGNED, "different_contig", obs_payload
+        if _is_chimeric_read(r1, r2, state):
+            return None, BOTH_ALIGNED, "chimeric_read", obs_payload, None
+        return None, BOTH_ALIGNED, "different_contig", obs_payload, None
 
     s1 = _build_core_structure(r1)
     s2 = _build_core_structure(r2)
@@ -523,6 +602,7 @@ def _both_mapped(
             obs_payload = blobs
 
     outcome = _core_merge(s1, s2, cfg, merged_mapq, False, bool(others))
+    overlap_len = outcome.overlap_len
     if not outcome.ok:
         if rescue_eligible(
             outcome.reason,
@@ -532,9 +612,9 @@ def _both_mapped(
             shape_blocked=_rescue_shape_blocked(r1, r2, others),
         ):
             return _attempt_rescue(r1, r2, cands1, cands2, others, obs_payload, state)
-        return None, BOTH_ALIGNED, outcome.reason, obs_payload
+        return None, BOTH_ALIGNED, outcome.reason, obs_payload, None
     merged_record = _build_merged_record(r1.query_name, outcome, contig, state)
-    return merged_record, MERGEABLE, None, obs_payload
+    return merged_record, MERGEABLE, None, obs_payload, overlap_len
 
 
 def _rescue_shape_blocked(r1: Any, r2: Any, others: list[Any]) -> bool:
@@ -568,7 +648,13 @@ def _attempt_rescue(
     others: list[Any],
     obs_payload: tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None,
     state: _WorkerState,
-) -> tuple[Any | None, str, str | None, tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None]:
+) -> tuple[
+    Any | None,
+    str,
+    str | None,
+    tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None,
+    int | None,
+]:
     """Attempt joint low-MAPQ rescue for an eligible template.
 
     Rescue relocates the mates to the unique compatible joint placement
@@ -579,7 +665,7 @@ def _attempt_rescue(
     """
     outcome = rescue_pair(r1, r2, cands1, cands2, state)
     if outcome.status != STATUS_RESCUED:
-        return None, BOTH_ALIGNED, outcome.status, obs_payload
+        return None, BOTH_ALIGNED, outcome.status, obs_payload, None
     _relocate_record(r1, outcome.p1, state)
     _relocate_record(r2, outcome.p2, state)
     # A relocation may flip a mate's strand; the mate-reverse flags (0x20)
@@ -601,11 +687,11 @@ def _attempt_rescue(
     # re-observed at the rescued locus (documented in the README).
     merged = _core_merge(s1, s2, state.cfg, 0, True, bool(others))
     if not merged.ok:
-        return None, BOTH_ALIGNED, merged.reason, None
+        return None, BOTH_ALIGNED, merged.reason, None, None
     merged_record = _build_merged_record(
         r1.query_name, merged, state.contig(r1.reference_id), state, rescued=True
     )
-    return merged_record, MERGEABLE, None, None
+    return merged_record, MERGEABLE, None, None, merged.overlap_len
 
 
 _DISCOVER_CACHE_CAP = 262_144
@@ -867,9 +953,7 @@ def _concat_bams(dest: Path, files: list[str], tmp_dir: str) -> None:
                 if len(group) == 1:
                     reduced.append(group[0])
                     continue
-                merged = os.path.join(
-                    tmp_dir, f"cat_{dest.stem}_{generation}_{start:06d}.bam"
-                )
+                merged = os.path.join(tmp_dir, f"cat_{dest.stem}_{generation}_{start:06d}.bam")
                 pysam.samtools.cat("-o", merged, *group)
                 for path in group:
                     os.unlink(path)
@@ -963,10 +1047,15 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                 aggregator = FastDisagreementAccumulator(cfg)
                 aggregator.set_spill_dir(tmpdir)
 
-                def on_meta(classification: str, merge_reason: str | None) -> None:
+                merge_stats = MergeStatsCollector()
+
+                def on_meta(
+                    classification: str, merge_reason: str | None, overlap_len: int | None
+                ) -> None:
                     stats.add(classification)
                     if merge_reason:
                         reasons[merge_reason] += 1
+                    merge_stats.add(classification, merge_reason, overlap_len)
 
                 chunks = _iter_chunks(input_file, cfg.chunk_size)
                 chunk_files: dict[str, list[str]] = {}
@@ -977,7 +1066,11 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                             obs = []
                             for records in chunk:
                                 result = process_template(records, state, emit_writers=writers)
-                                on_meta(result.classification, result.merge_reason)
+                                on_meta(
+                                    result.classification,
+                                    result.merge_reason,
+                                    result.overlap_len,
+                                )
                                 if result.observations is not None:
                                     obs.append(result.observations)
                             aggregator.add_chunk(*_chunk_observation_arrays(obs))
@@ -1032,8 +1125,14 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
 
                 disag_tmp = Path(str(cfg.disagreement_parquet) + f".pairloom-tmp-{os.getpid()}")
                 stats_tmp = Path(str(cfg.read_stats_parquet) + f".pairloom-tmp-{os.getpid()}")
+                mstats_tmp: Path | None = None
+                if cfg.merge_stats_parquet is not None:
+                    mstats_tmp = Path(str(cfg.merge_stats_parquet) + f".pairloom-tmp-{os.getpid()}")
+                    write_merge_stats_parquet(
+                        mstats_tmp, merge_stats.rows(), cfg.parquet_compression
+                    )
                 # Register temps before writing so failures clean them up.
-                tmp_files.extend([disag_tmp, stats_tmp])
+                tmp_files.extend([disag_tmp, stats_tmp] + ([mstats_tmp] if mstats_tmp else []))
                 aggregator.finalize(disag_tmp, ref_names)
                 write_read_stats_parquet(stats_tmp, stats.counts(), cfg.parquet_compression)
 
@@ -1084,6 +1183,9 @@ def run_pipeline(cfg: PairLoomConfig) -> RunSummary:
                     pairs.append((idx_tmp, final_idx))
                 pairs.append((disag_tmp, cfg.disagreement_parquet))
                 pairs.append((stats_tmp, cfg.read_stats_parquet))
+                if mstats_tmp is not None:
+                    assert cfg.merge_stats_parquet is not None  # noqa: S101
+                    pairs.append((mstats_tmp, cfg.merge_stats_parquet))
                 for tmp, final in pairs:
                     if final.exists():
                         backup = Path(str(final) + f".pairloom-bak-{os.getpid()}")
@@ -1233,8 +1335,8 @@ def _drain_one(pending: deque, on_meta: Any, aggregator: Any, chunk_files: dict)
         raise
     except Exception as exc:
         raise WorkerError(f"worker chunk failed: {exc}") from exc
-    for classification, merge_reason in meta:
-        on_meta(classification, merge_reason)
+    for classification, merge_reason, overlap_len in meta:
+        on_meta(classification, merge_reason, overlap_len)
     for stream, path in paths.items():
         chunk_files[stream].append(path)
     aggregator.add_chunk(*arrays)
