@@ -1212,3 +1212,25 @@ The user asked for the primary records fastp merged but PairLoom did not, with a
 Files (analysis repo): Created results/exports/{fastp_only_nonchimeric.pe.bam,fastp_only_nonchimeric.names}; Updated results/exports/README.md.
 
 Git: commit in the analysis repo plus this docs entry in pairloom; neither pushed.
+
+## Show the failed reason inside the non-chimeric fastp-only export
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked that fastp_only_nonchimeric.pe.bam also carry the failed reason.
+
+### result
+
+1. Implemented: rebuilt the export from the classified run's unmerged BAM, so both primary records of every pair now carry ZC:Z:both_aligned and ZM:Z:<reason> alongside PairLoom's adjusted placement tags (MD/NM/MQ).
+2. Verified: 2,420 records, quickcheck passed, ZM distribution matches the per-reason pair counts exactly (740/610/464/460/56/54/36 records for the 7 reasons).
+
+### change
+
+Files (analysis repo): Updated results/exports/{fastp_only_nonchimeric.pe.bam,README.md}.
+
+Git: commit in the analysis repo plus this docs entry in pairloom; neither pushed.
