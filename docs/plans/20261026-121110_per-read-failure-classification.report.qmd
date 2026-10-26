@@ -1,0 +1,591 @@
+---
+title: "Per-read merge-failure classification — report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧵</text></svg>">
+---
+
+## feature
+
+### Per-read reason tag, chimeric_read subtype, and merge-stats table
+
+```
+level: high
+```
+
+#### reason
+
+High: implemented end to end, suite green with new tests, and the pilot
+equivalence gate passes with exactly the two intended deltas.
+
+#### description
+
+```
+type: [text, table]
+```
+
+1. `ZM:Z:<reason>` on both primary records of every unmerged failed
+   template (`--reason-tag`, default `ZM`, validated distinct from `ZC`
+   and the `ZR` marker). Merged and unaligned-only templates carry no
+   reason tag.
+2. `chimeric_read`: cross-contig pairs whose mates show read-through
+   evidence — an outer soft clip of at least 10 bp occurring in the other
+   mate's stored sequence — reported instead of `different_contig`
+   (memoized; off the hot path).
+3. `--merge-stats-parquet` (optional, explicit path): long-format table
+   `type` (classification | reason | family | overlap_hist), `key`,
+   `count`, deterministic ordering; family rollup groups all reasons plus
+   unaligned and merged.
+
+| Pilot observation | Value |
+| --- | ---: |
+| `different_contig` before / after split | 453 → 242 + 211 `chimeric_read` |
+| Overlap histogram sum | 97,748 = mergeable count |
+| Reason rows | match the done-line merge-reasons dict exactly |
+
+#### before
+
+The failure reason was computed per template, counted into the stderr
+done line, and discarded — no output said which reason applied to which
+read; `different_contig` conflated concatemer evidence with plain
+cross-contig misassignment.
+
+#### after
+
+Every unmerged failed template's primaries name their reason in-place;
+concatemers are distinguishable from plain cross-contig pairs; QC can
+consume the family rollup and overlap histogram from one parquet file.
+Record content is otherwise byte-identical (gate-verified).
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `EQUIVALENCE: PASS` on the pilot with `--strip-tag ZM
+  --normalize-reason-split` (records identical modulo the new tag; done
+  line identical after summing the contig split).
+- `238 passed, 9 skipped`; ruff lint/format clean; pilot wall ~6.5 s
+  (unchanged).
+
+:::
+
+## fix
+
+None
+
+## limitation
+
+### The chimeric evidence test is clip-containment, not alignment
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the check is deliberately cheap and sequence-local; it can miss
+read-through whose clip is shorter than 10 bp or heavily errored, and it
+cannot distinguish a concatemer from a true cross-molecule chimera.
+
+#### description
+
+```
+type: [text]
+```
+
+The subtype answers "is there read-through evidence consistent with a
+concatemer or chimera", not "is this molecule a dimer". Consumers wanting
+structural certainty can align the merged read (as the benchmark did:
+split primary+supplementary alignments).
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+The benchmark's `fastp_only.se.bam` export shows both signatures:
+`chimeric_read`-class pairs split primary+supplementary; plain
+`different_contig` pairs do not.
+
+:::
+
+## caveat
+
+None
+
+## assumption
+
+None
+
+## conclusion
+
+### The augment design shipped with no behavior change beyond the two intended deltas
+
+```
+level: high
+```
+
+#### reason
+
+High: the equivalence gate pins it — records identical modulo `ZM`, done
+line identical after the documented contig split, both parquets and all
+other counts untouched.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Outputs: only `ZM` tags and the reason split are new.
+2. Performance: pilot wall unchanged; the tag write and clip test run on
+   unmerged templates only.
+3. Semantics: the reason vocabulary is the 19 documented strings plus
+   `chimeric_read`; families are a pure rollup.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`benchmarks/equivalence_check.py --strip-tag ZM --normalize-reason-split`
+→ PASS; suite 238.
+
+:::
+
+## recommendation
+
+### M: Use ZM to filter QC populations per family
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: the tag makes the families actionable in one samtools filter.
+
+#### description
+
+```
+type: [text]
+```
+
+For example `samtools view -e 'ZM=="chimeric_read"'` isolates
+concatemers for junction-frequency QC without re-running anything.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Choose the arm by required semantics — sequence recovery vs placement honesty
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward; the classification now labels exactly this
+trade-off per read.
+
+#### description
+
+```
+type: [text]
+```
+
+Carried forward from the benchmark reports.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Measure joint-rescue cost on low-MAPQ-heavy cohorts before scaling
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Carried forward; `--no-rescue` opts out.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Quantify repeat content before enabling --force-mapq60-exact
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward advisory guard.
+
+#### description
+
+```
+type: [text]
+```
+
+Carried forward.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## next
+
+### M: Extend candidate discovery to slide gapped alignments
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward; now also reduces rescue_unsupported_alignment.
+
+#### description
+
+```
+type: [text]
+```
+
+Bounded local realignment beyond exact ungapped blocks.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### M: Batch the rescue reference search with a multi-pattern index
+
+```
+level: medium
+```
+
+#### reason
+
+Medium: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Aho-Corasick-style batching per work chunk.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Build a calibrated joint-MAPQ model for rescued pairs
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Derive joint confidence instead of a constant.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Add GitHub Actions CI with Dependabot
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward; needs the rust build step.
+
+#### description
+
+```
+type: [text]
+```
+
+Pixi-based test matrix, ruff, benchmark smoke, `pixi run core`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+### L: Promote the synthetic known-fragment benchmark into the repo suite
+
+```
+level: low
+```
+
+#### reason
+
+Low: carried forward.
+
+#### description
+
+```
+type: [text]
+```
+
+Move the generator and evaluator under `benchmarks/`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+None
+:::
+
+## observation
+
+### The pilot's different_contig split is nearly even
+
+```
+level: high
+```
+
+#### reason
+
+High: measured directly on the pilot.
+
+#### description
+
+```
+type: [statistic]
+```
+
+453 cross-contig refusals split into 242 plain `different_contig` and
+211 `chimeric_read` — consistent with the benchmark's finding that the
+fastp-only cross-contig population is concatemer-heavy.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Pilot done line after the change; the walkthrough pair
+(F1-942|F1-1194, flags 65/129 with 80M70S mates) is exactly the
+clip-containment signature.
+
+:::
+
+## process
+
+### Plan first, gate with explicit tolerances, keep the vocabulary closed
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The plan's verification criteria were written before code; the gate
+   options encode the two allowed deltas rather than eyeballing.
+2. The reason vocabulary was left closed (19 strings + chimeric_read);
+   families are presentation, not new semantics.
+3. The chimeric check was designed off the hot path (memoized, run only
+   on cross-contig refusals) — pilot wall confirmed unchanged.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Plan `20261026-114810` (as executed); gate output in the session log.
+
+:::
+
+### Two test-harness stumbles cost a few minutes each
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. Tests initially built records against a nonexistent `fx.header`
+   attribute and stale contig names ("ctg1"/"ctg2") from an earlier
+   mental draft; both failed loudly and were fixed against the fixture's
+   real API.
+2. The better action: read the fixture API before writing tests, not
+   after the failures.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+AttributeError/`mapped records without reference id` failures in the
+session log.
+
+:::
+
+## change
+
+### Files, packages, environments, git
+
+```
+level: high
+```
+
+#### reason
+
+High: mutation facts.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Repo | Verb | Paths |
+| --- | --- | --- |
+| pairloom | Created | `tests/test_failure_classification.py`, plan `20261026-114810`, this report |
+| pairloom | Updated | `src/pairloom/{config,cli,pipeline,parquetout}.py`, `benchmarks/equivalence_check.py`, `README.md`, `AGENTS.md` |
+
+Environments: none new. Git: `e286e94` (plan), `5036e22` (feat), plus
+this report's docs commit; not pushed.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline`; `238 passed` suite run.
+
+:::
+
+## other
+
+None

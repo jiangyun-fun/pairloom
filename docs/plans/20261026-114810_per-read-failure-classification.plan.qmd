@@ -1,5 +1,5 @@
 ---
-title: "Per-read merge-failure classification (augment design) — plan"
+title: "Per-read merge-failure classification (augment design) — plan (as executed)"
 author: "Yun Jiang"
 date: today
 ---
@@ -56,3 +56,14 @@ rollup, and merged-overlap-length histogram.
   identical; done line identical after merging the two contig-split counts.
 3. `ZM` present exactly on unmerged failed primaries; values drawn from the
   reason vocabulary; merged/unaligned templates untagged.
+
+# Deviations from the plan (as executed)
+
+1. The gate gained two checker options instead of a hand-rolled comparison:
+   `--strip-tag ZM` and `--normalize-reason-split` (sums different_contig
+   and chimeric_read before comparing done lines).
+2. Suite grew to 238 (5 new tests in tests/test_failure_classification.py).
+3. Pilot verification: 453 different_contig split into 242 + 211; all other
+   counts, both parquets, and the BAM records identical modulo ZM; the
+   overlap histogram sums to 97,748 = mergeable; pilot wall unchanged
+   (~6.5 s, tag writes and the clip test are off the hot path).

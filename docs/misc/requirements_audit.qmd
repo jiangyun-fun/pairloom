@@ -1140,3 +1140,28 @@ The user asked how unmapped reads flow through pairloom.
 ### change
 
 None (question turn).
+
+## Implement the per-read failure classification (augment design)
+
+```
+level: high
+date: 2026-10-26
+```
+
+### description
+
+Go ahead with the augment design: ZM per-record reason tag, chimeric_read subtype, --merge-stats-parquet rollup, fixtures, and an equivalence gate showing only the intended deltas.
+
+### result
+
+1. Implemented: ZM:Z:<reason> (--reason-tag default ZM, validated) on both primaries of unmerged failed templates; chimeric_read as clip-containment evidence subtype of different_contig; --merge-stats-parquet with classification/reason/family/overlap-histogram rows.
+2. Verified: pilot equivalence PASS modulo exactly the two intended deltas (--strip-tag ZM --normalize-reason-split gate options); 453 different_contig split 242+211; histogram sums to mergeable 97,748; suite 238 passed; lint/format clean; pilot wall unchanged.
+3. Documented: README reason/tag/stats sections; AGENTS test count; plan/report pair committed.
+
+### change
+
+Files (pairloom repo):
+- Created: tests/test_failure_classification.py (5 tests), docs/plans/20261026-114810 plan + 20261026-121110 report
+- Updated: src/pairloom/{config,cli,pipeline,parquetout}.py, benchmarks/equivalence_check.py, README.md, AGENTS.md, docs/misc/next_and_recommendation.qmd
+
+Git: e286e94 (plan), 5036e22 (feat), plus docs commits; not pushed.
