@@ -1033,3 +1033,26 @@ The user asked why some qnames in fastp_only.se.bam have only one row while othe
 ### change
 
 None (question turn; measurement from the exported BAM).
+
+## Export both buckets as primary-record paired-end BAMs
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+For the two exported bucket BAMs, provide paired-end style output containing only primary records.
+
+### result
+
+1. Implemented: results/exports/{fastp_only.pe.bam,pairloom_only.pe.bam} — the original bwa-mem2 paired records (both mates, 0x1/0x40/0x80 flags, mate coordinates and TLEN intact) for the same qname buckets, secondary/supplementary dropped.
+2. Verified: 185,634 = 92,817 x 2 and 5,626 = 2,813 x 2 records; quickcheck passed; queryname-sorted so each pair is adjacent.
+3. Noted: name-ordered files carry no .bai; first records illustrate the bucket mechanisms (cross-contig pair flags 65/129; error-laden 113S37M mate flags 83/163).
+
+### change
+
+Files (analysis repo): Created results/exports/{fastp_only.pe.bam,pairloom_only.merged.bam counterpart pairloom_only.pe.bam}; Updated results/exports/README.md.
+
+Git: commit in the analysis repo, not pushed.
