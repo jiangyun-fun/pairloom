@@ -1012,3 +1012,24 @@ Export the full-dataset one-tool-only benchmark buckets as separate, usable BAM 
 Files (analysis repo): Created results/exports/{fastp_only.se.bam,fastp_only.se.bam.bai,pairloom_only.merged.bam,pairloom_only.merged.bam.bai,fastp_only.names,pairloom_only.names,README.md}; Updated .gitignore.
 
 Git: 07f77a6 in the analysis repo, not pushed.
+
+## Explain single-row records in the fastp-only BAM export
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked why some qnames in fastp_only.se.bam have only one row while others have several.
+
+### result
+
+1. Answered: the file is single-end (one row per alignment); extra rows appear only as secondary/supplementary alignments. Single-row = exactly one reported alignment.
+2. Measured: 52,493 qnames have 1 row — 40,271 error/indel-bearing reads aligned uniquely but imperfectly (MAPQ<60), 5,926 unalignable (single unmapped row), ~5,109 structurally-refused pairs aligning cleanly (MAPQ 60). 40,324 qnames have 2+ rows (repeat secondaries and concatemer supplementaries).
+3. Noted: the composition follows directly from the bucket being PairLoom's refusals (unsupported alignments, chimeras, unalignable mates).
+
+### change
+
+None (question turn; measurement from the exported BAM).
