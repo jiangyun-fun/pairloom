@@ -536,7 +536,7 @@ checker.
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (242 tests)
+pixi run test          # full pytest suite (250 tests)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark
