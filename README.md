@@ -1,5 +1,8 @@
 # PairLoom
 
+[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pair-aware BAM realignment, overlap analysis, and paired-end read merging.
 
 PairLoom (`pairloom` CLI) processes paired-end BAM alignments against a
@@ -25,8 +28,9 @@ run with a nonzero exit code, and outputs are published atomically.
 ## Installation
 
 ```bash
-git clone <repo> && cd pairloom
+git clone https://github.com/jiangyun-fun/pairloom && cd pairloom
 pixi install          # conda deps + editable install of the package
+pixi run core         # build the required Rust core (needs cargo)
 pixi run pairloom --help
 ```
 
@@ -532,7 +536,7 @@ checker.
 ## Development
 
 ```bash
-pixi run test          # full pytest suite (182 tests, all 35 spec scenarios)
+pixi run test          # full pytest suite (242 tests)
 pixi run lint          # ruff check
 pixi run format        # ruff format --check
 pixi run bench         # reproducible benchmark
@@ -545,4 +549,4 @@ compared field by field.
 
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).
