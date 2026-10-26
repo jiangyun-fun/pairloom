@@ -1534,3 +1534,25 @@ The user asked whether the gallery BAM is checked by pairloom; the manual verifi
 Files (pairloom repo): Created tests/test_gallery.py; Updated AGENTS.md, README.md (test counts), this entry.
 
 Git: pairloom 5de3647, cb85fbd, plus this docs commit; not pushed.
+
+## Explain the internal pixi channels in the workspace
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked what the two internal entries in the pixi.toml channel list are and whether they matter for the public repo.
+
+### result
+
+1. Answered: conda-forge and bioconda supply everything; all 232 pixi.lock package URLs are conda.anaconda.org, zero resolve from the internal channels (added at scaffold ac573de).
+2. Answered: file:///bioproj/tools/share/conda-jy-essentials is a local personal channel holding cyvcf2, lemonade, r-*, and taplo.
+3. Answered: s3://conda/sibio is the internal distribution channel (four platform subdirs), referenced by 8+ repos here via ambient aws credentials; seqconsistency was published to it today.
+4. Answered: installs-from-lock skip both (CI proved); fresh solves fetch every channel's repodata, so outsiders fail on s3 — hence the drop-them recommendation.
+
+### change
+
+None (question turn; this entry only).
