@@ -1190,3 +1190,25 @@ Files (analysis repo): Created results/classified_pilot/* (BAMs, parquets, READM
 Files (pairloom repo): this audit entry.
 
 Git: 13d6534 in the analysis repo plus this docs commit; neither pushed.
+
+## Export non-chimeric fastp-only pairs as a BAM
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked for the primary records fastp merged but PairLoom did not, with a non-chimeric_read reason, as a BAM file.
+
+### result
+
+1. Implemented: results/exports/fastp_only_nonchimeric.pe.bam (pilot scale) — 1,210 pairs / 2,420 primary records, queryname-sorted, quickcheck-passed, with the qname list and README beside it.
+2. Reported composition: rescue_ambiguous 370, rescue_unsupported_alignment 305, different_contig 232, non_primary_records 230, indel_conflict 28, insertion_conflict 27, orientation_incompatible 18; excluded 211 chimeric_read pairs and 102 unmapped-mate pairs (no reason tag).
+
+### change
+
+Files (analysis repo): Created results/exports/{fastp_only_nonchimeric.pe.bam,fastp_only_nonchimeric.names}; Updated results/exports/README.md.
+
+Git: commit in the analysis repo plus this docs entry in pairloom; neither pushed.
