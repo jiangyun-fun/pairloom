@@ -1,0 +1,58 @@
+---
+title: "Per-read merge-failure classification (augment design) — plan"
+author: "Yun Jiang"
+date: today
+---
+
+# Objective
+
+Surface PairLoom's per-template merge-failure reason on the records and in a
+new optional stats output, per the approved augment design: keep `ZC`
+(classification) and `--read-stats-parquet` unchanged; add `ZM:Z:<reason>` on
+both primary records of unmerged failed templates; add the evidence-backed
+`chimeric_read` subtype of `different_contig`; add optional
+`--merge-stats-parquet` carrying the classification × reason rollup, family
+rollup, and merged-overlap-length histogram.
+
+# Scope
+
+1. `config.py`: `reason_tag` (default `ZM`, validated like `status_tag`);
+   optional `merge_stats_parquet` path.
+2. `pipeline.py`:
+   - `_is_chimeric_read(r1, r2)`: a mate's outer soft clip (>= 10 bp) occurs
+     in the other mate's stored sequence — read-through evidence, checked
+     only on the `different_contig` return; subtype reason becomes
+     `chimeric_read`.
+   - tag `ZM:Z:<reason>` on primaries of failed templates in
+     `process_template` (classification loop); absent for merged and
+     unaligned-only templates.
+   - per-template meta gains overlap_len (merged templates only).
+   - accumulate classification/reason/family/overlap counters in the main
+     process from the meta stream; write via parquetout.
+3. `parquetout.py`: `write_merge_stats_parquet` — long-format table
+   (type ∈ {classification, reason, family, overlap_hist}, key, count),
+   deterministic ordering; family mapping for all 19 reasons + chimeric_read
+   + unaligned/merged groups.
+4. `cli.py`: `--reason-tag` (default ZM), `--merge-stats-parquet` (optional
+   explicit path).
+5. README: `chimeric_read` reason + family table, ZM tag + reservation,
+   `--merge-stats-parquet` schema; AGENTS test count.
+6. Tests: chimeric vs plain cross-contig detection; ZM presence/value/absence
+   across reason classes; merge-stats parquet reconciles with the done line
+   and histogram sums to merged count.
+
+# Risks
+
+- The done line's `different_contig` count splits into `different_contig` +
+  `chimeric_read`: expected, documented; the equivalence gate must compare
+  modulo that split and modulo the new ZM tag.
+- Tag ordering on records: `ZM` is appended after existing tags; SAM string
+  equality in the gate uses tag-stripped comparison.
+
+# Verification
+
+1. Suite green (233 + new tests); lint/format clean.
+2. Pilot run: BAMs identical to baseline after stripping `ZM`; parquets
+  identical; done line identical after merging the two contig-split counts.
+3. `ZM` present exactly on unmerged failed primaries; values drawn from the
+  reason vocabulary; merged/unaligned templates untagged.
