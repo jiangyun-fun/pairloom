@@ -1284,3 +1284,24 @@ The user asked again for the primary records fastp merged but PairLoom did not, 
 Files (analysis repo): Created scripts/12_export_fastp_only_nonchimeric_dedup.py, results/exports/{fastp_only_nonchimeric.dedup.pe.bam,fastp_only_nonchimeric.dedup.names}; Updated results/exports/README.md, docs/misc/requirements_audit.qmd (mirror).
 
 Files (pairloom repo): this audit entry. Git: commits in both repos; neither pushed.
+
+## Explain the non_primary_records failure reason
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked what the `non_primary_records` merge-failure reason means, after seeing it in the dedup-run export.
+
+### result
+
+1. Answered: the reason fires when a template carries any secondary (0x100) or supplementary (0x800) record; merge.py:123 returns the failure before any overlap logic runs.
+2. Explained: merging replaces the template's primary records, so split/multi evidence would be lost or overstated; non-primary records pass through unchanged and untagged (README record policy).
+3. Illustrated: pilot pair ...:1103:15519:36918 — both mates split F1-3123 (primary) + F1-43 (supplementary, SA tags); 231 such pairs in the dedup pilot.
+
+### change
+
+None (question turn; this entry only).
