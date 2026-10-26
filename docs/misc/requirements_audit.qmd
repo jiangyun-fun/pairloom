@@ -1077,3 +1077,24 @@ The user asked what each tool produced for one specific pair from the fastp-only
 ### change
 
 None (question turn; evidence pulled from the exported BAMs and run outputs).
+
+## Clarify where the failure reasons surface in current output
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user asked whether the existing evidence-level reasons are already part of pairloom's output.
+
+### result
+
+1. Answered: yes in aggregate, no per-read. The done line's merge-reasons={...} dict counts every fired reason; 15 merge reasons (merge.py:55-69) plus 4 rescue failure statuses (rescue.py:52-56) = 19 reason strings; corrected my earlier imprecise count of 16.
+2. Verified: per-read tags carry only classification (ZC via classify.py:62-69) and the rescue-success marker (ZR); the per-template merge_reason is counted and discarded.
+3. Noted: the proposed classification change is therefore surfacing, not computation — no new logic beyond the chimeric_read subtype check.
+
+### change
+
+None (question turn).
