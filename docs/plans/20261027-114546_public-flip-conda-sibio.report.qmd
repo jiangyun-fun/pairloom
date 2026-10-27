@@ -1,0 +1,1004 @@
+---
+title: "PairLoom public flip, v0.1.0, and sibio conda publication"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧬</text></svg>">
+---
+
+## feature
+
+### Repository is public with branch protection and secret scanning
+
+```
+level: high
+```
+
+#### reason
+
+The visibility, the protection rules, and the security settings were each verified through the GitHub API after the change.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `jiangyun-fun/pairloom` is now `visibility: public`.
+2. Branch protection on `main` requires the `ci` check, enforces linear history, and stays non-locking for the maintainer.
+3. Secret scanning and push protection are enabled.
+
+#### before
+
+The repository was private. Branch protection returned 403 on the free plan, and secret scanning was unavailable.
+
+#### after
+
+The repository is public with the recorded protection payload applied. Pushes that would bypass the required check are rejected on pull requests.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `gh repo view --json visibility` → `PUBLIC`.
+- Protection GET: `{"checks":["ci"],"linear":true,"admins":false}`.
+- Security PATCH echo: `{"push_protection":"enabled","secret_scanning":"enabled"}`.
+
+:::
+
+### v0.1.0 released with an sdist that carries the Rust core
+
+```
+level: high
+```
+
+#### reason
+
+The release exists with the sdist attached, and the attached asset is byte-identical to the verified local build.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The sdist include list in `pyproject.toml` gained `rust` and `LICENSE`.
+2. Tag `v0.1.0` is pushed; the release carries `pairloom-0.1.0.tar.gz`.
+3. The archive contains `rust/Cargo.toml`, `rust/Cargo.lock`, `rust/src/lib.rs`, `LICENSE`, and `pyproject.toml`.
+
+#### before
+
+The sdist included only Python sources, tests, README, and pixi.toml. A downstream build from it could not compile the required core.
+
+#### after
+
+Anything that can run cargo and pip can build the complete tool from the release archive.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `gh release view v0.1.0` assets: `pairloom-0.1.0.tar.gz`, 119,904 bytes, state `uploaded`.
+- `cmp` of the authenticated download against the local build: identical. sha256 `00f3057e7d453ea35446ebdde3b966f17396658d39d575cb07a31d2238e2adbb`.
+
+:::
+
+### Conda package built and published to the sibio channel
+
+```
+level: high
+```
+
+#### reason
+
+A clean environment installed the package from the deployed channel and the CLI ran.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `conda-recipes/recipes/pairloom/recipe.yaml` builds linux-64: pip-installs the Python package, maturin-builds the `pairloom_core` extension, and installs both.
+2. Built artifact: `pairloom-0.1.0-h41f06ac_0.conda` (431 KiB).
+3. Published to `s3://conda/sibio/linux-64/` through the MinIO workspace (copy, reindex, mirror).
+
+#### before
+
+The only install path was cloning the repository and running pixi plus a cargo build.
+
+#### after
+
+Internal consumers install with `pixi add pairloom` against the sibio channel. The CLI works without any Rust toolchain on the host.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Fresh project with channels `["conda-forge", "s3://conda/sibio"]`: `pixi add pairloom` → `Added pairloom >=0.1.0,<0.2`; `pairloom --version` → `pairloom 0.1.0`.
+- `pixi search pairloom -c s3://conda/sibio` resolves `0.1.0-h41f06ac_0`.
+
+:::
+
+## fix
+
+### sdist omitted the Rust core and the license
+
+```
+level: high
+```
+
+#### reason
+
+The omission was confirmed by the include list before the release. The fixed sdist's contents were listed from the built archive.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The sdist include list carried only `src/pairloom`, `tests`, `README.md`, and `pixi.toml`.
+2. It now also carries `rust` and `LICENSE`.
+
+#### before
+
+A conda recipe or any downstream build that fetched the release sdist would fail: `rust/Cargo.toml` was absent, so `maturin` had nothing to compile.
+
+#### after
+
+The release archive is self-contained for every build path that has cargo and pip.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tar -tzf dist/pairloom-0.1.0.tar.gz` lists `pairloom-0.1.0/rust/Cargo.toml`, `rust/Cargo.lock`, `rust/pyproject.toml`, `rust/src/lib.rs`, and `pairloom-0.1.0/LICENSE`.
+
+:::
+
+## limitation
+
+### The conda package is CPython 3.13 only, linux-64
+
+```
+level: high
+```
+
+#### reason
+
+The extension is compiled once against the host interpreter, so the package carries `python_abi 3.13.* *_cp313`. No other platform or Python was built.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The recipe builds linux-64 only.
+2. The build resolved python 3.13 in the pinned range, so the ABI pin fixes runtime to CPython 3.13.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`info/index.json` depends include `python_abi 3.13.* *_cp313` and `__glibc >=2.17,<3.0.a0`.
+
+:::
+
+### The wheel still omits the Rust core
+
+```
+level: high
+```
+
+#### reason
+
+`pixi run build` packages `src/pairloom` only. The conda path solves this inside the recipe; the wheel path remains unchanged.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The PyPI-style wheel is still Python-only.
+2. Release automation stays deferred until the core ships inside the wheel or the project publishes to PyPI.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`pyproject.toml` wheel target: `packages = ["src/pairloom"]`. The conda recipe installs the core as a second step.
+
+:::
+
+## caveat
+
+### Git history retains the pre-scrub internal paths
+
+```
+level: high
+```
+
+#### reason
+
+The scrub rewrote the working tree in an ordinary commit. Old commits still carry the original paths, and the repository is now public.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Five `/bioproj` references were rewritten in the plans pair and the audit.
+2. Instrument read names in benchmark documentation were kept: they carry no host information.
+3. History rewriting was out of scope, matching the seqconsistency precedent.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`git grep -c '/bioproj'` across tracked files after the scrub: 0 matches. Earlier commits in `git log` still contain the original text.
+
+:::
+
+### The MinIO deploy script hardcodes credentials
+
+```
+level: high
+```
+
+#### reason
+
+The publish skill documents this as a known smell. The script was used as-is and was not modified.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `deploy_conda_channel.sh` embeds the MinIO admin credentials and calls `mc alias set`.
+2. This is flagged for the channel owner; changing it needs an explicit instruction.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Skill note: `deploy_conda_channel.sh` hardcodes MinIO credentials and `mc alias set` — a security smell worth flagging to the channel owner.
+
+:::
+
+## assumption
+
+None
+
+## conclusion
+
+### The full pipeline works: source to channel to running CLI
+
+```
+level: high
+```
+
+#### reason
+
+Every stage was verified independently, and the last stage is a clean-room install test.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Release sdist → recipe build → artifact with correct run-deps.
+2. Artifact → sibio channel → resolvable by pixi.
+3. Channel → fresh environment → `pairloom --version` prints 0.1.0.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`__glibc >=2.17` run-export confirms the global `c_stdlib_version` pin applied. The channel's repodata `depends` list matches the recipe exactly.
+
+:::
+
+## recommendation
+
+### M: use ZM to filter QC populations per family
+
+```
+level: medium
+```
+
+#### reason
+
+The tags are emitted by design and cover every template. The filtering examples were verified against real outputs in earlier sessions.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `samtools view -e 'ZM=="chimeric_read"'` isolates concatemers.
+2. `ZN == 1` isolates merged dimers.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### M: on shared-scaffold panels, prefer placement-gated merging
+
+```
+level: medium
+```
+
+#### reason
+
+The GS4381 benchmark measured fastp at 99.4 percent panel-imperfect merges on this panel class, against 8 percent for PairLoom.
+
+#### description
+
+```
+type: [text]
+```
+
+1. fastp's 20 percent difference limit admits spurious long overlaps.
+2. Placement-gated merging rejects them and reconstructed exact 238 bp fragments in 92 percent of merges.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward. Full-sample benchmark report: `20261026.bench_pairloom_vs_fastp.GS4381-PF2-5_S34_L002/report/full_summary.html`.
+
+:::
+
+### M: choose between fastp and PairLoom by required semantics
+
+```
+level: medium
+```
+
+#### reason
+
+The two tools optimize different goals on the same input. Merge rate is not the discriminator.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Sequence recovery favors fastp.
+2. Placement honesty favors PairLoom.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### M: for low-MAPQ-heavy cohorts on large references, sample the rescue cost first
+
+```
+level: medium
+```
+
+#### reason
+
+Joint rescue costs one linear reference scan per rescued mate block. Genome scale multiplies that cost.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Measure on a sample before a full cohort.
+2. `--no-rescue` opts out.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### M: rebuild the conda package if other interpreter or platform consumers appear
+
+```
+level: medium
+```
+
+#### reason
+
+The published build is cp313 linux-64 only. The recipe already carries the correct constraint range, so new builds are a variant change, not a redesign.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Add a python 3.12 variant or an osx-64 target when a consumer needs it.
+2. Rebuild and republish through the same recipe.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Recipe pins `python >=3.12,<3.14`; the artifact carries `python_abi 3.13.* *_cp313`.
+
+:::
+
+### L: before relying on --force-mapq60-exact, quantify reference repeat content
+
+```
+level: low
+```
+
+#### reason
+
+MAPQ 60 claims depend on reference uniqueness. The check has not been built yet.
+
+#### description
+
+```
+type: [text]
+```
+
+Quantify the repeat content of the target reference first.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+## next
+
+### M: slide gapped alignments in candidate discovery
+
+```
+level: medium
+```
+
+#### reason
+
+`rescue_unsupported_alignment` is the top refusal reason at full scale, 54,526 templates on the GS4381 run.
+
+#### description
+
+```
+type: [text]
+```
+
+Extend candidate discovery to indel-bearing alignments via bounded local realignment.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+Reason counts sum to `both_aligned=180,043` in the GS4381 analysis `results/summary_full.json`.
+
+:::
+
+### M: batch the joint-rescue reference search with a multi-pattern index
+
+```
+level: medium
+```
+
+#### reason
+
+Rescue cost scales with one linear scan per rescued block. A batched index removes that factor per work chunk.
+
+#### description
+
+```
+type: [text]
+```
+
+Build an Aho-Corasick style multi-pattern index per work chunk for the joint rescue search.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### M: diagnose the PF2 shared-scaffold motif
+
+```
+level: medium
+```
+
+#### reason
+
+The motif explains fastp's spurious overlaps on the verified example pair. The panel-wide mechanism is not established.
+
+#### description
+
+```
+type: [text]
+```
+
+Diagnose the shared-scaffold motif that invites fastp's spurious long overlaps.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Example pair `A00133:1576:H5JFHDSXG:2:1101:10086:13135`, motif `...CCTATATAAGCAGAGCTCG...`, in the GS4381 report.
+
+:::
+
+### M: triage the Dependabot pyo3 0.23 to 0.30 pull request
+
+```
+level: medium
+```
+
+#### reason
+
+The PR's CI run passed, so the upgrade compiles and tests green. The merge decision is an appetite call.
+
+#### description
+
+```
+type: [text]
+```
+
+Merge or close `chore(deps): bump pyo3 from 0.23.5 to 0.30.1 in /rust in the deps group`. A merge would also raise the maximum supported Python for the conda build.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Run list line: `ci | dependabot/cargo/rust/deps-bbf3797cf9 | completed success`.
+
+:::
+
+### L: build a calibrated joint-MAPQ model
+
+```
+level: low
+```
+
+#### reason
+
+Rescued pairs and the non-primary evidence class both emit flat MAPQ 0. A calibrated model replaces the flat value.
+
+#### description
+
+```
+type: [text]
+```
+
+Model joint MAPQ for rescued pairs and merged non-primary evidence.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### L: promote the synthetic known-fragment benchmark into the repo suite
+
+```
+level: low
+```
+
+#### reason
+
+The benchmark exists and measures recovery against designed fragments. Housing it under `benchmarks/` makes it reproducible for contributors.
+
+#### description
+
+```
+type: [text]
+```
+
+Move the synthetic benchmark into `benchmarks/` in the repo suite.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### L: re-run the GO00009 full benchmark on the deduplicated panel
+
+```
+level: low
+```
+
+#### reason
+
+The pilot re-run is done. The full-scale numbers are wanted only if the earlier sample's full analysis still matters.
+
+#### description
+
+```
+type: [text]
+```
+
+Re-run only if the full-scale numbers are still wanted.
+
+#### evidence
+
+```
+level: low
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Carried forward from the previous rolling state.
+
+:::
+
+### L: add a release workflow once the Rust core ships in the wheel
+
+```
+level: low
+```
+
+#### reason
+
+A release workflow that attaches today's wheel would ship a broken artifact: the wheel cannot run without the separately built core.
+
+#### description
+
+```
+type: [text]
+```
+
+Add tag-triggered release automation after the core ships inside the wheel or the project publishes to PyPI.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`pyproject.toml` wheel target packages `src/pairloom` only.
+
+:::
+
+### L: submit pairloom to bioconda if wider reach is wanted
+
+```
+level: low
+```
+
+#### reason
+
+The recipe is validated in rattler-build format. bioconda requires the meta.yaml conversion, which the conda-recipes workflow already supports.
+
+#### description
+
+```
+type: [text]
+```
+
+Convert to `meta.yaml` per the conda-recipes workflow and open the bioconda PR.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+The seqconsistency precedent: `meta.yaml` conversion plus PR #70765.
+
+:::
+
+## observation
+
+### The release asset 404'd while the repository was private
+
+```
+level: high
+```
+
+#### reason
+
+The asset existed (state `uploaded`, correct size) yet the plain URL returned 404 to an unauthenticated client.
+
+#### description
+
+```
+type: [text]
+```
+
+1. GitHub hides private release assets as 404 rather than 403.
+2. The authenticated `gh release download` fetched it fine.
+3. After the public flip, the plain URL serves the same bytes to any client.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`curl -sfL .../pairloom-0.1.0.tar.gz` → `http=404 size=0` before the flip; `cmp` of the authenticated download against the local build → identical.
+
+:::
+
+## process
+
+### pinned the host python after reading the pyo3 error
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The first build failed: pyo3 0.23.5 rejects interpreters newer than 3.13, and the solver provided 3.15.
+2. The fix pinned `python >=3.12,<3.14` in host and run, matching the project's own range.
+3. The rebuild passed. The better first move would have been to mirror the project's python range from the start.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Build log: `the configured Python interpreter version (3.15) is newer than PyO3's maximum supported version (3.13)`.
+
+:::
+
+### caught the duplicated requirements key before building
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The first recipe draft split `build`/`host` and `run` across two `requirements:` keys.
+2. Duplicate YAML keys would have silently kept only the last block.
+3. A re-read caught it before the build. The better action is to check YAML key uniqueness on paste-style edits.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+The Edit that merged the blocks into one `requirements:` tree preceded the first build attempt.
+
+:::
+
+### used the channel deploy skill from the MinIO workspace
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. Copy, `pixi run index`, `pixi run upload` ran from `/bioproj/data/minio`, per the skill.
+2. Verification ended with `pixi search` and a fresh-env install, not the mirror log.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`pixi search pairloom -c s3://conda/sibio` resolved; the fresh env printed `pairloom 0.1.0`.
+
+:::
+
+## change
+
+### mutations across the two repositories
+
+```
+level: high
+```
+
+#### reason
+
+All rows were executed and verified this session. These are facts.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Verb | Path or target |
+| --- | --- |
+| Updated | `pyproject.toml` (sdist includes), `pixi.toml` (public channels), `pixi.lock` (regenerated) |
+| Updated | 20261022 plans pair and audit (path scrub) |
+| Created | `docs/plans/20261027-113526_public-flip-conda-sibio.plan.qmd` and this report |
+| Created | `conda-recipes:recipes/pairloom/recipe.yaml` |
+| Git | pairloom `4ea9fc3` scrub (pushed), tag `v0.1.0` (pushed), docs commits |
+| Git | conda-recipes `feat: add pairloom recipe` |
+| GitHub | visibility public, branch protection, secret scanning, release v0.1.0 |
+| Channel | `s3://conda/sibio/linux-64/pairloom-0.1.0-h41f06ac_0.conda` |
+
+No packages were installed into project environments. The sdist build used a throwaway venv, removed after use.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline -2` shows `4ea9fc3`; release and channel states verified above.
+
+:::
+
+## other
+
+None

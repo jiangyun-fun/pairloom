@@ -1,0 +1,91 @@
+---
+title: "Plan: make pairloom public, then package it for the sibio conda channel"
+author: "Yun Jiang"
+date: 2026-10-27
+---
+
+# Objective
+
+Follow the seqconsistency playbook (transcript of 2026-10-26): scrub
+host-specific references, flip `jiangyun-fun/pairloom` to public, enable
+the protections that unlock at public, release v0.1.0 with an sdist that
+carries the Rust core, write a rattler-build recipe in the conda-recipes
+repo, build it, and publish the package to the internal
+`s3://conda/sibio` channel.
+
+# Steps (as executed)
+
+## A. Public-readiness scrub — commit `4ea9fc3`, pushed
+
+1. `pyproject.toml`: sdist include list gained `rust` and `LICENSE`.
+2. `pixi.toml`: dropped both internal channels; lock regenerated against
+   conda-forge + bioconda only (232 public URLs, zero internal refs —
+   the solve re-resolved a few packages to newer builds).
+3. Rewrote the five `/bioproj` references in the 20261022 plans pair and
+   the audit to neutral descriptions; kept instrument read names.
+4. `pixi run test-fast`: 250 passed, 9 skipped.
+5. Pushed everything, including the five commits that were pending.
+
+## B. Release v0.1.0
+
+1. Built the sdist in a throwaway venv (`python -m build --sdist`);
+   verified the archive contains `rust/{Cargo.toml,Cargo.lock,src/}`,
+   `LICENSE`, `pyproject.toml`.
+2. Tagged `v0.1.0`, pushed the tag, created the release with the sdist
+   attached.
+3. Verified the asset byte-identical to the local build
+   (sha256 `00f3057e...adbb`). Note: while the repo was still private,
+   the unauthenticated asset URL 404'd; the check used an authenticated
+   `gh release download` instead.
+
+## C. Public flip + protections
+
+1. `gh repo edit --visibility public` → `visibility: public`.
+2. Branch protection PUT succeeded (blocked earlier while private):
+   required check `ci`, linear history, non-locking, verified via GET.
+3. Secret scanning + push protection enabled via JSON-body PATCH (the
+   first attempt used `-f`, which sent a string and failed with 422).
+
+## D. Conda recipe — conda-recipes `feat: add pairloom recipe`
+
+1. `recipes/pairloom/recipe.yaml`: linux-64 (Rust core — not noarch),
+   source = release sdist + sha256, build = pip-install the Python
+   package + `maturin build --manifest-path rust/Cargo.toml` + pip-install
+   the core wheel, run deps `python >=3.12,<3.14`, `pysam >=0.24`,
+   `pyarrow >=25`, `numpy >=2.5`, tests = imports + `--version`/`--help`.
+2. Build iterations: (1) first draft carried a duplicated `requirements:`
+   key — caught on re-read before building; (2) pyo3 0.23.5 rejects
+   Python > 3.13 and the solver gave the host 3.15 — pinned
+   `python >=3.12,<3.14` in host+run; (3) build green
+   (`pairloom-0.1.0-h41f06ac_0.conda`).
+3. Run-exports verified: `__glibc >=2.17` (the global c_stdlib pin
+   worked), `python_abi 3.13 cp313`, no spurious host deps.
+
+## E. Publish to sibio
+
+1. Copied the artifact to `/bioproj/data/minio/sibio_local/linux-64/`,
+   ran `pixi run index` then `pixi run upload` from that workspace
+   (channel deployed to the local-minio bucket).
+2. `pixi search pairloom -c s3://conda/sibio` resolves 0.1.0;
+   authoritative repodata `depends` matches the recipe.
+3. End-to-end: throwaway pixi project with the sibio channel,
+   `pixi add pairloom` solved and installed; `pairloom --version`
+   printed 0.1.0 and `--help` rendered. Scratch dirs removed.
+
+# Risks and outcomes
+
+1. Maturin inside rattler-build needed no extra toolchain beyond
+   `compiler('rust')` — maturin + cargo cooperated once python was
+   pinned.
+2. Lock regeneration from public channels solved cleanly.
+3. The public flip landed after the scrub push — order held.
+4. S3 upload was append-only copy + reindex + mirror per the skill.
+
+# Verification
+
+1. Suite green after the channel removal (250 passed, 9 skipped).
+2. Release asset byte-identical to the local sdist.
+3. Repo public; protection GET returns the rules; secret scanning
+   enabled.
+4. Recipe builds clean; glibc floor 2.17.
+5. Fresh env installs pairloom from sibio; the CLI runs.

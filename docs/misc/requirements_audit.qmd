@@ -1577,3 +1577,28 @@ The user asked how the two gallery templates differ — fragment_length_out_of_b
 ### change
 
 None (question turn; this entry only).
+
+## Make pairloom public, release v0.1.0, and publish a conda package to sibio
+
+```
+level: high
+date: 2026-10-27
+cross-repo: pairloom, conda-recipes
+```
+
+### description
+
+The user asked to follow the seqconsistency playbook for pairloom: make the repo public-ready, release a version, generate a conda recipe, and upload the package to the internal sibio channel.
+
+### result
+
+1. Implemented: scrub — internal pixi channels dropped with the lock regenerated from public channels, five docs paths rewritten, sdist gains rust/ and LICENSE; suite green.
+2. Implemented: v0.1.0 tagged and released with the sdist; repo flipped public; branch protection (context ci) and secret scanning enabled and verified.
+3. Implemented: rattler-build recipe in conda-recipes (linux-64, maturin-built core); pairloom-0.1.0-h41f06ac_0.conda published to s3://conda/sibio/linux-64.
+4. Verified: fresh env installs from sibio and pairloom --version prints 0.1.0; glibc floor 2.17; channel deps match the recipe.
+
+### change
+
+Files: Updated pyproject.toml, pixi.toml, pixi.lock, the 20261022 plans pair, this audit (scrub); Created the 20261027-113526/114546 plans pair.
+
+Git: pairloom 4ea9fc3 + tag v0.1.0 + docs commits, pushed; conda-recipes feat: add pairloom recipe. GitHub: repo public, branch protection, secret scanning, release v0.1.0.
