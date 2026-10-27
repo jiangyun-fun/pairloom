@@ -19,7 +19,7 @@ uncovered gaps), and runtime/peak-memory measurement with a full-run estimate.
 
 # Scope
 
-1. New analysis workspace `/bioproj/analysis/default/20261022.bench_pairloom_vs_fastp.GO00009_S19/`
+1. New analysis workspace `20261022.bench_pairloom_vs_fastp.GO00009_S19`
    — its own git repo and pixi env (fastp, bwa-mem2, samtools, pysam, polars);
    PairLoom runs from its repo env (binary path recorded).
 2. Sampling: reservoir sampling, seed 20261022, n=100,000 pairs from

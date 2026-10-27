@@ -121,7 +121,7 @@ Create an archived copy of the repository under /tmp/ whose history keeps only t
 1. Implemented `/tmp/pairloom-archive`: a clean git repo with exactly two commits (fix batch as new root 9bc3592, docs tip 45e6837).
 2. Verified the tip tree hash equals the original 8bae45c tree (31ad0bd9…), so the tracked content is byte-identical.
 3. Verified all older objects (e66a0d0, 4f22843, original 7b69ce0/8bae45c) are physically pruned after reflog expiry and gc.
-4. Confirmed the original repo at /bioproj/tools/github/pairloom is untouched (full history, clean tree).
+4. Confirmed the original pairloom repository is untouched (full history, clean tree).
 
 ### change
 
@@ -1549,7 +1549,7 @@ The user asked what the two internal entries in the pixi.toml channel list are a
 ### result
 
 1. Answered: conda-forge and bioconda supply everything; all 232 pixi.lock package URLs are conda.anaconda.org, zero resolve from the internal channels (added at scaffold ac573de).
-2. Answered: file:///bioproj/tools/share/conda-jy-essentials is a local personal channel holding cyvcf2, lemonade, r-*, and taplo.
+2. Answered: conda-jy-essentials is a server-local personal channel holding cyvcf2, lemonade, r-*, and taplo.
 3. Answered: s3://conda/sibio is the internal distribution channel (four platform subdirs), referenced by 8+ repos here via ambient aws credentials; seqconsistency was published to it today.
 4. Answered: installs-from-lock skip both (CI proved); fresh solves fetch every channel's repodata, so outsiders fail on s3 — hence the drop-them recommendation.
 

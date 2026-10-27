@@ -1,6 +1,6 @@
 [workspace]
 authors = ["Yun Jiang <jiangyunacw@gmail.com>"]
-channels = ["conda-forge", "bioconda", "file:///bioproj/tools/share/conda-jy-essentials", "s3://conda/sibio"]
+channels = ["conda-forge", "bioconda"]
 name = "pairloom"
 platforms = ["linux-64"]
 version = "0.1.0"

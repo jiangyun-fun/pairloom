@@ -77,7 +77,7 @@ type: [text]
   `results/summary.json`, `results/per_pair.parquet` in the analysis repo.
 - PairLoom done line: total=99401, mergeable=97748; fastp merged 99,224
   (armA fastp.json). Both counts reconcile with the join universe.
-- Rendered pilot summary: `/bioproj/analysis/default/20261022.bench_pairloom_vs_fastp.GO00009_S19/report/pilot_summary.html`
+- Rendered pilot summary: `report/pilot_summary.html` in the `20261022.bench_pairloom_vs_fastp.GO00009_S19` analysis workspace
 
 :::
 

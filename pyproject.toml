@@ -39,7 +39,7 @@ packages = ["src/pairloom"]
 dev-mode-dirs = ["src"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/pairloom", "tests", "README.md", "pixi.toml"]
+include = ["src/pairloom", "tests", "rust", "LICENSE", "README.md", "pixi.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
