@@ -1556,3 +1556,24 @@ The user asked what the two internal entries in the pixi.toml channel list are a
 ### change
 
 None (question turn; this entry only).
+
+## Explain the difference between fail_frag_len and fail_gap
+
+```
+level: low
+date: 2026-10-27
+```
+
+### description
+
+The user asked how the two gallery templates differ — fragment_length_out_of_bounds vs fragment_gap.
+
+### result
+
+1. Answered: fragment_length_out_of_bounds is the SIZE gate (span vs --min/max-fragment-length, merge.py:148); fragment_gap is the COVERAGE gate (a span base seen by neither mate, merge.py:201).
+2. Explained: the size gate runs first, so an out-of-bounds pair reports size even when it also has a hole; the gallery isolates them (span 200 with a 160-bp hole vs span 1520).
+3. Noted: only fragment_length_out_of_bounds is a rescue trigger; a high-MAPQ gapped pair is never re-placed.
+
+### change
+
+None (question turn; this entry only).
